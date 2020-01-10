@@ -76,7 +76,7 @@ btr_corruption_report(
 			       buf_block_get_zip_size(block),
 			       BUF_PAGE_PRINT_NO_CRASH);
 	}
-	buf_page_print(buf_block_get_frame_fast(block), 0, 0);
+	buf_page_print(buf_nonnull_block_get_frame(block), 0, 0);
 }
 
 #ifndef UNIV_HOTBACKUP
@@ -1077,7 +1077,7 @@ btr_get_size(
 	SRV_CORRUPT_TABLE_CHECK(root,
 	{
 		mtr_commit(mtr);
-		return(0);
+		return(ULINT_UNDEFINED);
 	});
 
 	if (flag == BTR_N_LEAF_PAGES) {
@@ -2974,7 +2974,6 @@ btr_level_list_remove_func(
 	ulint	prev_page_no;
 	ulint	next_page_no;
 
-	ut_ad(page && mtr);
 	ut_ad(mtr_memo_contains_page(mtr, page, MTR_MEMO_PAGE_X_FIX));
 	ut_ad(space == page_get_space_id(page));
 	/* Get the previous and next page numbers of page */

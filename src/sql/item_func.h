@@ -39,6 +39,7 @@ protected:
     0 means get this number from first argument
   */
   uint allowed_arg_cols;
+  String *val_str_from_val_str_ascii(String *str, String *str2);
 
   void count_only_length(Item **item, uint nitems);
   void count_real_length(Item **item, uint nitems);
@@ -1067,7 +1068,6 @@ class Item_func_min_max :public Item_func
   int cmp_sign;
   /* An item used for issuing warnings while string to DATETIME conversion. */
   Item *compare_as_dates;
-  THD *thd;
 protected:
   enum_field_types cached_field_type;
 public:

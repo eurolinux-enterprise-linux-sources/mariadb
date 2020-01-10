@@ -979,7 +979,7 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
     {
       uint length;
       uchar *pos;
-      Item *real_item;
+      Item_field *real_item;
 
       if (read_info.read_field())
 	break;
@@ -991,16 +991,26 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
       pos=read_info.row_start;
       length=(uint) (read_info.row_end-pos);
 
-      real_item= item->real_item();
+      real_item= item->filed_for_view_update();
 
       if ((!read_info.enclosed &&
            (enclosed_length && length == 4 &&
             !memcmp(pos, STRING_WITH_LEN("NULL")))) ||
 	  (length == 1 && read_info.found_null))
       {
-        if (real_item->type() == Item::FIELD_ITEM)
+        if (item->type() == Item::STRING_ITEM)
         {
-          Field *field= ((Item_field *)real_item)->field;
+          ((Item_user_var_as_out_param *)item)->set_null_value(
+                                                  read_info.read_charset);
+        }
+        else if (!real_item)
+        {
+          my_error(ER_NONUPDATEABLE_COLUMN, MYF(0), item->name);
+          DBUG_RETURN(1);
+        }
+        else
+        {
+          Field *field= real_item->field;
           if (field->reset())
           {
             my_error(ER_WARN_NULL_TO_NOTNULL, MYF(0), field->field_name,
@@ -1017,38 +1027,28 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
                                  ER_WARN_NULL_TO_NOTNULL, 1);
           }
 	}
-        else if (item->type() == Item::STRING_ITEM)
-        {
-          ((Item_user_var_as_out_param *)item)->set_null_value(
-                                                  read_info.read_charset);
-        }
-        else
-        {
-          my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-          DBUG_RETURN(1);
-        }
 
 	continue;
       }
 
-      if (real_item->type() == Item::FIELD_ITEM)
+      if (item->type() == Item::STRING_ITEM)
       {
-        Field *field= ((Item_field *)real_item)->field;
+        ((Item_user_var_as_out_param *)item)->set_value((char*) pos, length,
+                                                        read_info.read_charset);
+      }
+      else if (!real_item)
+      {
+        my_error(ER_NONUPDATEABLE_COLUMN, MYF(0), item->name);
+        DBUG_RETURN(1);
+      }
+      else
+      {
+        Field *field= real_item->field;
         field->set_notnull();
         read_info.row_end[0]=0;			// Safe to change end marker
         if (field == table->next_number_field)
           table->auto_increment_field_not_null= TRUE;
         field->store((char*) pos, length, read_info.read_charset);
-      }
-      else if (item->type() == Item::STRING_ITEM)
-      {
-        ((Item_user_var_as_out_param *)item)->set_value((char*) pos, length,
-                                                        read_info.read_charset);
-      }
-      else
-      {
-        my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-        DBUG_RETURN(1);
       }
     }
 
@@ -1069,10 +1069,20 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
 	break;
       for (; item ; item= it++)
       {
-        Item *real_item= item->real_item();
-        if (real_item->type() == Item::FIELD_ITEM)
+        Item_field *real_item= item->filed_for_view_update();
+        if (item->type() == Item::STRING_ITEM)
         {
-          Field *field= ((Item_field *)real_item)->field;
+          ((Item_user_var_as_out_param *)item)->set_null_value(
+                                                  read_info.read_charset);
+        }
+        else if (!real_item)
+        {
+          my_error(ER_NONUPDATEABLE_COLUMN, MYF(0), item->name);
+          DBUG_RETURN(1);
+        }
+        else
+        {
+          Field *field= real_item->field;
           if (field->reset())
           {
             my_error(ER_WARN_NULL_TO_NOTNULL, MYF(0),field->field_name,
@@ -1092,16 +1102,6 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
                               ER_WARN_TOO_FEW_RECORDS,
                               ER(ER_WARN_TOO_FEW_RECORDS),
                               thd->warning_info->current_row_for_warning());
-        }
-        else if (item->type() == Item::STRING_ITEM)
-        {
-          ((Item_user_var_as_out_param *)item)->set_null_value(
-                                                  read_info.read_charset);
-        }
-        else
-        {
-          my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-          DBUG_RETURN(1);
         }
       }
     }
@@ -1389,8 +1389,8 @@ READ_INFO::READ_INFO(File file_par, uint tot_length, CHARSET_INFO *cs,
   set_if_bigger(length,line_start.length());
   stack=stack_pos=(int*) sql_alloc(sizeof(int)*length);
 
-  if (!(buffer=(uchar*) my_malloc(buff_length+1,MYF(MY_WME))))
-    error= true; /* purecov: inspected */
+  if (!(buffer=(uchar*) my_malloc(buff_length+1,MYF(0))))
+    error=1; /* purecov: inspected */
   else
   {
     end_of_buff=buffer+buff_length;
@@ -1581,50 +1581,37 @@ int READ_INFO::read_field()
 	}
       }
 #ifdef USE_MB
-        uint ml= my_mbcharlen(read_charset, chr);
-        if (ml == 0)
-        {
-          *to= '\0';
-          my_error(ER_INVALID_CHARACTER_STRING, MYF(0),
-                   read_charset->csname, buffer);
-          error= true;
-          return 1;
-        }
+      if (my_mbcharlen(read_charset, chr) > 1 &&
+          to + my_mbcharlen(read_charset, chr) <= end_of_buff)
+      {
+        uchar* p= to;
+        int ml, i;
+        *to++ = chr;
 
-        if (ml > 1 &&
-            to + ml <= end_of_buff)
-        {
-          uchar* p= to;
-          *to++ = chr;
+        ml= my_mbcharlen(read_charset, chr);
 
-          for (uint i= 1; i < ml; i++)
+        for (i= 1; i < ml; i++)
+        {
+          chr= GET;
+          if (chr == my_b_EOF)
           {
-            chr= GET;
-            if (chr == my_b_EOF)
-            {
-              /*
-                Need to back up the bytes already ready from illformed
-                multi-byte char 
-              */
-              to-= i;
-              goto found_eof;
-            }
-            *to++ = chr;
+            /*
+             Need to back up the bytes already ready from illformed
+             multi-byte char
+            */
+            to-= i;
+            goto found_eof;
           }
-          if (my_ismbchar(read_charset,
+          *to++ = chr;
+        }
+        if (my_ismbchar(read_charset,
                         (const char *)p,
                         (const char *)to))
-            continue;
-          for (uint i= 0; i < ml; i++)
-            PUSH(*--to);
-          chr= GET;
-        }
-        else if (ml > 1)
-        {
-          // Buffer is too small, exit while loop, and reallocate.
-          PUSH(chr);
-          break;
-        }
+          continue;
+        for (i= 0; i < ml; i++)
+          PUSH(*--to);
+        chr= GET;
+      }
 #endif
       *to++ = (uchar) chr;
     }
@@ -1868,15 +1855,7 @@ int READ_INFO::read_value(int delim, String *val)
   for (chr= GET; my_tospace(chr) != delim && chr != my_b_EOF;)
   {
 #ifdef USE_MB
-    uint ml= my_mbcharlen(read_charset, chr);
-    if (ml == 0)
-    {
-      chr= my_b_EOF;
-      val->length(0);
-      return chr;
-    }
-
-    if (ml > 1)
+    if (my_mbcharlen(read_charset, chr) > 1)
     {
       DBUG_PRINT("read_xml",("multi byte"));
       int i, ml= my_mbcharlen(read_charset, chr);

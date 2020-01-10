@@ -54,7 +54,7 @@
 #define MIN_TIME_WIDTH          10      /* -HHH:MM:SS */
 #define MAX_TIME_WIDTH          16      /* -DDDDDD HH:MM:SS */
 #define MAX_TIME_FULL_WIDTH     23      /* -DDDDDD HH:MM:SS.###### */
-#define MAX_DATETIME_FULL_WIDTH 29	/* YYYY-MM-DD HH:MM:SS.###### AM */
+#define MAX_DATETIME_FULL_WIDTH 26	/* YYYY-MM-DD HH:MM:SS.###### */
 #define MAX_DATETIME_WIDTH	19	/* YYYY-MM-DD HH:MM:SS */
 #define MAX_DATETIME_COMPRESSED_WIDTH 14  /* YYYYMMDDHHMMSS */
 #define MAX_DATETIME_PRECISION  6
@@ -65,6 +65,7 @@
 #define RAND_TABLE_BIT	(((table_map) 1) << (sizeof(table_map)*8-1))
 #define PSEUDO_TABLE_BITS (PARAM_TABLE_BIT | OUTER_REF_TABLE_BIT | \
                            RAND_TABLE_BIT)
+#define CONNECT_STRING_MAXLEN   65535           /* stored in 2 bytes in .frm */
 #define MAX_FIELDS	4096			/* Limit in the .frm file */
 #define MAX_PARTITIONS  1024
 

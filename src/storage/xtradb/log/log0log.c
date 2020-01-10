@@ -2,6 +2,7 @@
 
 Copyright (c) 1995, 2010, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Google Inc.
+Copyright (c) 2017, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -2502,6 +2503,7 @@ log_group_read_log_seg(
 	ulint	len;
 	ulint	source_offset;
 	ibool	sync;
+	ib_time_t	time;
 
 	ut_ad(mutex_own(&(log_sys->mutex)));
 
@@ -2537,6 +2539,15 @@ loop:
 
 	start_lsn += len;
 	buf += len;
+
+	time = ut_time();
+
+	if (recv_sys->progress_time - time >= 15) {
+		recv_sys->progress_time = time;
+		ut_print_timestamp(stderr);
+		fprintf(stderr, "  InnoDB: Read redo log up to LSN=%llu\n",
+			start_lsn);
+	}
 
 	if (start_lsn != end_lsn) {
 
@@ -3420,7 +3431,8 @@ logs_empty_and_mark_files_at_shutdown(void)
 	algorithm only works if the server is idle at shutdown */
 
 	srv_shutdown_state = SRV_SHUTDOWN_CLEANUP;
-	os_event_set(srv_shutdown_event);
+
+	srv_wake_purge_thread();
 loop:
 	os_thread_sleep(100000);
 
@@ -3594,7 +3606,7 @@ loop:
 		srv_shutdown_state = SRV_SHUTDOWN_LAST_PHASE;
 		/* Wake the log tracking thread which will then immediatelly
 		quit because of srv_shutdown_state value */
-		if (srv_track_changed_pages) {
+		if (srv_redo_log_thread_started) {
 			os_event_set(srv_checkpoint_completed_event);
 			os_event_wait(srv_redo_log_thread_finished_event);
 		}
@@ -3671,7 +3683,7 @@ loop:
 	srv_shutdown_state = SRV_SHUTDOWN_LAST_PHASE;
 
 	/* Signal the log following thread to quit */
-	if (srv_track_changed_pages) {
+	if (srv_redo_log_thread_started) {
 		os_event_set(srv_checkpoint_completed_event);
 	}
 
@@ -3695,7 +3707,7 @@ loop:
 
 	fil_flush_file_spaces(FIL_TABLESPACE);
 
-	if (srv_track_changed_pages) {
+	if (srv_redo_log_thread_started) {
 		os_event_wait(srv_redo_log_thread_finished_event);
 	}
 

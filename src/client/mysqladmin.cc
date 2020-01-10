@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2016, Monty Program Ab.
+   Copyright (c) 2010, 2017, Monty Program Ab.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1516,8 +1516,10 @@ static my_bool get_pidfile(MYSQL *mysql, char *pidfile)
 
   if (mysql_query(mysql, "SHOW VARIABLES LIKE 'pid_file'"))
   {
-    my_printf_error(0, "query failed; error: '%s'", error_flags,
-		    mysql_error(mysql));
+    my_printf_error(mysql_errno(mysql),
+                    "The query to get the server's pid file failed,"
+                    " error: '%s'. Continuing.", error_flags,
+                    mysql_error(mysql));
   }
   result = mysql_store_result(mysql);
   if (result)
