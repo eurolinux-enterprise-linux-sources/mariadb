@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2011, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2013, Monty Program Ab
+   Copyright (c) 2010, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -295,6 +295,8 @@ enum enum_server_command
   To mark ResultSet containing output parameter values.
 */
 #define SERVER_PS_OUT_PARAMS            4096
+
+#define SERVER_STATUS_ANSI_QUOTES       32768
 
 /**
   Server status flags that must be cleared when starting

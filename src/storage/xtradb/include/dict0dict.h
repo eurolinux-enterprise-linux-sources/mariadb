@@ -1,6 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -118,17 +119,6 @@ ulint
 dict_col_get_mbmaxlen(
 /*==================*/
 	const dict_col_t*	col);	/*!< in: column */
-/*********************************************************************//**
-Sets the minimum and maximum number of bytes per character. */
-UNIV_INLINE
-void
-dict_col_set_mbminmaxlen(
-/*=====================*/
-	dict_col_t*	col,		/*!< in/out: column */
-	ulint		mbminlen,	/*!< in: minimum multi-byte
-					character size, in bytes */
-	ulint		mbmaxlen);	/*!< in: minimum multi-byte
-					character size, in bytes */
 /*********************************************************************//**
 Gets the column data type. */
 UNIV_INLINE
@@ -605,7 +595,7 @@ ulint
 dict_index_is_clust(
 /*================*/
 	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 /********************************************************************//**
 Check whether the index is unique.
 @return	nonzero for unique index, zero for other indexes */
@@ -614,7 +604,7 @@ ulint
 dict_index_is_unique(
 /*=================*/
 	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 /********************************************************************//**
 Check whether the index is the insert buffer tree.
 @return	nonzero for insert buffer, zero for other indexes */
@@ -623,7 +613,7 @@ ulint
 dict_index_is_ibuf(
 /*===============*/
 	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 /********************************************************************//**
 Check whether the index is a secondary index or the insert buffer tree.
 @return	nonzero for insert buffer, zero for other indexes */
@@ -632,7 +622,7 @@ ulint
 dict_index_is_sec_or_ibuf(
 /*======================*/
 	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 
 /********************************************************************//**
 Gets the number of user-defined columns in a table in the dictionary
@@ -643,7 +633,7 @@ ulint
 dict_table_get_n_user_cols(
 /*=======================*/
 	const dict_table_t*	table)	/*!< in: table */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 /********************************************************************//**
 Gets the number of system columns in a table in the dictionary cache.
 @return	number of system (e.g., ROW_ID) columns of a table */
@@ -662,7 +652,7 @@ ulint
 dict_table_get_n_cols(
 /*==================*/
 	const dict_table_t*	table)	/*!< in: table */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 #ifdef UNIV_DEBUG
 /********************************************************************//**
 Gets the nth column of a table.
@@ -1321,7 +1311,7 @@ ulint
 dict_index_is_corrupted(
 /*====================*/
 	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((nonnull, pure, warn_unused_result));
+	__attribute__((warn_unused_result));
 
 #endif /* !UNIV_HOTBACKUP */
 /**********************************************************************//**
@@ -1332,7 +1322,7 @@ void
 dict_set_corrupted(
 /*===============*/
 	dict_index_t*	index)		/*!< in/out: index */
-	UNIV_COLD __attribute__((nonnull));
+	UNIV_COLD;
 
 /**********************************************************************//**
 Flags an index corrupted in the data dictionary cache only. This

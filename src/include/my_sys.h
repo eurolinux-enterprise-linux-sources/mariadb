@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2016, Monty Program Ab.
+   Copyright (c) 2010, 2017, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -641,9 +641,7 @@ extern int my_sync(File fd, myf my_flags);
 extern int my_sync_dir(const char *dir_name, myf my_flags);
 extern int my_sync_dir_by_file(const char *file_name, myf my_flags);
 extern void my_error(int nr,myf MyFlags, ...);
-extern void my_printf_error(uint my_err, const char *format,
-                            myf MyFlags, ...)
-                            ATTRIBUTE_FORMAT(printf, 2, 4);
+extern void my_printf_error(uint my_err, const char *format, myf MyFlags, ...);
 extern void my_printv_error(uint error, const char *format, myf MyFlags,
                             va_list ap);
 extern int my_error_register(const char** (*get_errmsgs) (),

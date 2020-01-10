@@ -1,7 +1,7 @@
 #ifndef TABLE_INCLUDED
 #define TABLE_INCLUDED
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2014, SkySQL Ab.
+/* Copyright (c) 2000, 2017, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@
 /* Structs that defines the TABLE */
 
 class Item;				/* Needed by ORDER */
+typedef Item (*Item_ptr);
 class Item_subselect;
 class Item_field;
 class GRANT_TABLE;
@@ -495,10 +496,11 @@ typedef struct st_ha_data_partition
 class Table_check_intact
 {
 protected:
+  bool has_keys;
   virtual void report_error(uint code, const char *fmt, ...)= 0;
 
 public:
-  Table_check_intact() {}
+  Table_check_intact() : has_keys(FALSE) {}
   virtual ~Table_check_intact() {}
 
   /** Checks whether a table is intact. */
@@ -2106,6 +2108,9 @@ struct TABLE_LIST
   inline void set_merged_derived()
   {
     DBUG_ENTER("set_merged_derived");
+    DBUG_PRINT("enter", ("Alias: '%s'  Unit: %p",
+                        (alias ? alias : "<NULL>"),
+                         get_unit()));
     derived_type= ((derived_type & DTYPE_MASK) |
                    DTYPE_TABLE | DTYPE_MERGE);
     set_check_merged();
@@ -2118,6 +2123,10 @@ struct TABLE_LIST
   void set_materialized_derived()
   {
     DBUG_ENTER("set_materialized_derived");
+    DBUG_PRINT("enter", ("Alias: '%s'  Unit: %p",
+                        (alias ? alias : "<NULL>"),
+                         get_unit()));
+    derived= get_unit();
     derived_type= ((derived_type & (derived ? DTYPE_MASK : DTYPE_VIEW)) |
                    DTYPE_TABLE | DTYPE_MATERIALIZE);
     set_check_materialized();
@@ -2348,7 +2357,7 @@ typedef struct st_nested_join
   table_map         sj_depends_on;
   /* Outer non-trivially correlated tables */
   table_map         sj_corr_tables;
-  List<Item>        sj_outer_expr_list;
+  List<Item_ptr>    sj_outer_expr_list;
   /**
      True if this join nest node is completely covered by the query execution
      plan. This means two things.

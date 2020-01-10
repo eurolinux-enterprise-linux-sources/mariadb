@@ -1250,6 +1250,8 @@ void THD::init(void)
   server_status= SERVER_STATUS_AUTOCOMMIT;
   if (variables.sql_mode & MODE_NO_BACKSLASH_ESCAPES)
     server_status|= SERVER_STATUS_NO_BACKSLASH_ESCAPES;
+  if (variables.sql_mode & MODE_ANSI_QUOTES)
+    server_status|= SERVER_STATUS_ANSI_QUOTES;
 
   transaction.all.modified_non_trans_table=
     transaction.stmt.modified_non_trans_table= FALSE;
@@ -2190,6 +2192,8 @@ void THD::nocheck_register_item_tree_change(Item **place, Item *old_value,
                                             MEM_ROOT *runtime_memroot)
 {
   Item_change_record *change;
+  DBUG_ENTER("THD::nocheck_register_item_tree_change");
+  DBUG_PRINT("enter", ("Register %p <- %p", old_value, (*place)));
   /*
     Now we use one node per change, which adds some memory overhead,
     but still is rather fast as we use alloc_root for allocations.
@@ -2202,12 +2206,13 @@ void THD::nocheck_register_item_tree_change(Item **place, Item *old_value,
       OOM, thd->fatal_error() is called by the error handler of the
       memroot. Just return.
     */
-    return;
+    DBUG_VOID_RETURN;
   }
   change= new (change_mem) Item_change_record;
   change->place= place;
   change->old_value= old_value;
   change_list.append(change);
+  DBUG_VOID_RETURN;
 }
 
 /**
@@ -2229,6 +2234,9 @@ void THD::check_and_register_item_tree_change(Item **place, Item **new_value,
                                               MEM_ROOT *runtime_memroot)
 {
   Item_change_record *change;
+  DBUG_ENTER("THD::check_and_register_item_tree_change");
+  DBUG_PRINT("enter", ("Register: %p (%p) <- %p (%p)",
+                       *place, place, *new_value, new_value));
   I_List_iterator<Item_change_record> it(change_list);
   while ((change= it++))
   {
@@ -2238,17 +2246,22 @@ void THD::check_and_register_item_tree_change(Item **place, Item **new_value,
   if (change)
     nocheck_register_item_tree_change(place, change->old_value,
                                       runtime_memroot);
+  DBUG_VOID_RETURN;
 }
 
 
 void THD::rollback_item_tree_changes()
 {
+  DBUG_ENTER("THD::rollback_item_tree_changes");
   I_List_iterator<Item_change_record> it(change_list);
   Item_change_record *change;
-  DBUG_ENTER("rollback_item_tree_changes");
 
   while ((change= it++))
+  {
+    DBUG_PRINT("info", ("Rollback: %p (%p) <- %p",
+                        *change->place, change->place, change->old_value));
     *change->place= change->old_value;
+  }
   /* We can forget about changes memory: it's allocated in runtime memroot */
   change_list.empty();
   DBUG_VOID_RETURN;
@@ -3668,7 +3681,7 @@ void Security_context::destroy()
   if (external_user)
   {
     my_free(external_user);
-    user= NULL;
+    external_user= NULL;
   }
 
   my_free(ip);

@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2016, MariaDB
+/* Copyright (c) 2000, 2017, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2017, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -880,6 +880,7 @@ void close_active_mi()
   if (active_mi)
   {
     end_master_info(active_mi);
+    end_relay_log_info(&active_mi->rli);
     delete active_mi;
     active_mi= 0;
   }
@@ -2340,7 +2341,6 @@ static int init_slave_thread(THD* thd, SLAVE_THD_TYPE thd_type)
   thd->enable_slow_log= opt_log_slow_slave_statements;
   thd->variables.log_slow_filter= global_system_variables.log_slow_filter;
   set_slave_thread_options(thd);
-  thd->client_capabilities = CLIENT_LOCAL_FILES;
   mysql_mutex_lock(&LOCK_thread_count);
   thd->thread_id= thd->variables.pseudo_thread_id= thread_id++;
   mysql_mutex_unlock(&LOCK_thread_count);
@@ -4600,6 +4600,7 @@ void end_relay_log_info(Relay_log_info* rli)
 {
   DBUG_ENTER("end_relay_log_info");
 
+  rli->error_on_rli_init_info= false;
   if (!rli->inited)
     DBUG_VOID_RETURN;
   if (rli->info_fd >= 0)

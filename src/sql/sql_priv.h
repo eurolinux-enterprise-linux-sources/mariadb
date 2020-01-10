@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2014, Monty Program Ab.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates.
+   Copyright (c) 2010, 2018, Monty Program Ab.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -121,7 +121,7 @@
 #define OPTION_AUTOCOMMIT       (1ULL << 8)    // THD, user
 #define OPTION_BIG_SELECTS      (1ULL << 9)     // THD, user
 #define OPTION_LOG_OFF          (1ULL << 10)    // THD, user
-#define OPTION_QUOTE_SHOW_CREATE (1ULL << 11)   // THD, user, unused
+#define OPTION_QUOTE_SHOW_CREATE (1ULL << 11)   // THD, user
 #define TMP_TABLE_ALL_COLUMNS   (1ULL << 12)    // SELECT, intern
 #define OPTION_WARNINGS         (1ULL << 13)    // THD, user
 #define OPTION_AUTO_IS_NULL     (1ULL << 14)    // THD, user, binlog
@@ -193,6 +193,11 @@ template <class T> T available_buffer(const char* buf_start,
                                       const char* buf_current,
                                       T buf_len)
 {
+  /* Sanity check */
+  if (buf_current < buf_start ||
+      buf_len < static_cast<T>(buf_current - buf_start))
+    return static_cast<T>(0);
+
   return buf_len - (buf_current - buf_start);
 }
 

@@ -316,7 +316,8 @@ bool Item_subselect::enumerate_field_refs_processor(uchar *arg)
   
   while ((upper= it++))
   {
-    if (upper->item->walk(&Item::enumerate_field_refs_processor, FALSE, arg))
+    if (upper->item &&
+        upper->item->walk(&Item::enumerate_field_refs_processor, FALSE, arg))
       return TRUE;
   }
   return FALSE;
@@ -1366,13 +1367,16 @@ Item_in_subselect::Item_in_subselect(Item * left_exp,
   Item_exists_subselect(), 
   left_expr_cache(0), first_execution(TRUE), in_strategy(SUBS_NOT_TRANSFORMED),
   optimizer(0), pushed_cond_guards(NULL), emb_on_expr_nest(NULL),
-  is_jtbm_merged(FALSE), is_jtbm_const_tab(FALSE), 
+  do_not_convert_to_sj(FALSE), is_jtbm_merged(FALSE), is_jtbm_const_tab(FALSE), 
   is_flattenable_semijoin(FALSE),
   is_registered_semijoin(FALSE), 
   upper_item(0)
 {
   DBUG_ENTER("Item_in_subselect::Item_in_subselect");
   left_expr_orig= left_expr= left_exp;
+  /* prepare to possible disassembling the item in convert_subq_to_sj() */
+  if (left_exp->type() == Item::ROW_ITEM)
+    left_expr_orig= new Item_row(left_exp);
   func= &eq_creator;
   init(select_lex, new select_exists_subselect(this));
   max_columns= UINT_MAX;
@@ -1397,6 +1401,9 @@ Item_allany_subselect::Item_allany_subselect(Item * left_exp,
 {
   DBUG_ENTER("Item_allany_subselect::Item_allany_subselect");
   left_expr_orig= left_expr= left_exp;
+  /* prepare to possible disassembling the item in convert_subq_to_sj() */
+  if (left_exp->type() == Item::ROW_ITEM)
+    left_expr_orig= new Item_row(left_exp);
   func= func_creator(all_arg);
   init(select_lex, new select_exists_subselect(this));
   max_columns= 1;
@@ -1739,7 +1746,7 @@ Item_in_subselect::single_value_transformer(JOIN *join)
   Item* join_having= join->having ? join->having : join->tmp_having;
   if (!(join_having || select_lex->with_sum_func ||
         select_lex->group_list.elements) &&
-      select_lex->table_list.elements == 0 &&
+      select_lex->table_list.elements == 0 && !join->conds &&
       !select_lex->master_unit()->is_union())
   {
     Item *where_item= (Item*) select_lex->item_list.head();
@@ -2493,6 +2500,27 @@ bool Item_in_subselect::inject_in_to_exists_cond(JOIN *join_arg)
   DBUG_ENTER("Item_in_subselect::inject_in_to_exists_cond");
   DBUG_ASSERT(thd == join_arg->thd);
 
+  if (select_lex->min_max_opt_list.elements)
+  {
+    /*
+      MIN/MAX optimizations have been applied to Item_sum objects
+      of the subquery this subquery predicate in opt_sum_query().
+      Injection of new condition invalidates this optimizations.
+      Thus those optimizations must be rolled back.
+    */
+    List_iterator_fast<Item_sum> it(select_lex->min_max_opt_list);
+    Item_sum *item;
+    while ((item= it++))
+    {
+      item->clear();
+      item->reset_forced_const();
+    }
+    if (where_item)
+      where_item->update_used_tables();
+    if (having_item)
+      having_item->update_used_tables();
+  }
+
   if (where_item)
   {
     List<Item> *and_args= NULL;
@@ -2850,7 +2878,8 @@ bool Item_in_subselect::init_cond_guards()
 {
   DBUG_ASSERT(thd);
   uint cols_num= left_expr->cols();
-  if (!abort_on_null && left_expr->maybe_null && !pushed_cond_guards)
+  if (!abort_on_null && !pushed_cond_guards &&
+      (left_expr->maybe_null || cols_num > 1))
   {
     if (!(pushed_cond_guards= (bool*)thd->alloc(sizeof(bool) * cols_num)))
         return TRUE;
@@ -4898,7 +4927,7 @@ int subselect_hash_sj_engine::exec()
 
     if (has_covering_null_row)
     {
-      DBUG_ASSERT(count_partial_match_columns = field_count);
+      DBUG_ASSERT(count_partial_match_columns == field_count);
       count_pm_keys= 0;
     }
     else if (has_covering_null_columns)

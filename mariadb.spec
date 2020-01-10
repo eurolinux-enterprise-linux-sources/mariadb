@@ -3,8 +3,8 @@
 %bcond_with tokudb
 
 Name: mariadb
-Version: 5.5.56
-Release: 2%{?dist}
+Version: 5.5.60
+Release: 1%{?dist}
 Epoch: 1
 
 Summary: A community developed branch of MySQL
@@ -22,7 +22,7 @@ License: GPLv2 with exceptions and LGPLv2 and BSD
 # Regression tests take a long time, you can skip 'em with this
 %{!?runselftest:%global runselftest 1}
 
-Source0: http://ftp.osuosl.org/pub/mariadb/mariadb-%{version}/kvm-tarbake-jaunty-x86/mariadb-%{version}.tar.gz
+Source0: http://mirror.hosting90.cz/%{name}/%{name}-%{version}/source/%{name}-%{version}.tar.gz
 Source3: my.cnf
 Source5: my_config.h
 Source6: README.mysql-docs
@@ -206,6 +206,8 @@ package contains the regression test suite distributed with
 the MariaDB sources.
 MariaDB is a community developed branch of MySQL.
 
+
+
 %prep
 %setup -q -n mariadb-%{version}
 
@@ -227,13 +229,8 @@ rm -f mysql-test/t/ssl_8k_key-master.opt
 
 # generate a list of tests that fail, but are not disabled by upstream
 cat %{SOURCE14} > mysql-test/rh-skipped-tests.list
-# disable some tests failing on particular aches
-%ifarch aarch64
-echo "perfschema.dml_setup_timers : rhbz#1449880" >> mysql-test/rh-skipped-tests.list
-%endif
-%ifarch i686
-echo "main.mysql_client_test_nonblock : rhbz#1021450" >> mysql-test/rh-skipped-tests.list
-%endif
+
+
 
 %build
 
@@ -300,6 +297,9 @@ cmake . -DBUILD_CONFIG=mysql_release \
 	-DTMPDIR=%{_localstatedir}/tmp \
 	-DWITH_MYSQLD_LDFLAGS="-Wl,-z,relro,-z,now"
 
+#For CMake "List Advanced Help" about possible arguments and their values
+#cmake -LAH
+
 make %{?_smp_mflags} VERBOSE=1
 
 # debuginfo extraction scripts fail to find source files in their real
@@ -310,6 +310,8 @@ for e in innobase xtradb ; do
     cp -p "storage/$e/pars/$f" "storage/$e/$f"
   done
 done
+
+
 
 %check
 %if %runselftest
@@ -337,15 +339,17 @@ done
   # increase timeouts to prevent unwanted failures during mass rebuilds
   (
     cd mysql-test
-    perl ./mysql-test-run.pl --force --retry=0 \
+    perl ./mysql-test-run.pl --force --retry=2 \
 	--skip-test-list=rh-skipped-tests.list \
 	--suite-timeout=720 --testcase-timeout=30 \
 	--mysqld=--binlog-format=mixed --force-restart \
-	--shutdown-timeout=60
+	--shutdown-timeout=60 --big-test --max-test-fail=100
     # cmake build scripts will install the var cruft if left alone :-(
     rm -rf var
   )
 %endif
+
+
 
 %install
 make DESTDIR=$RPM_BUILD_ROOT install
@@ -514,6 +518,8 @@ if [ $1 -eq 0 ] ; then
 fi
 
 %postun embedded -p /sbin/ldconfig
+
+
 
 %files
 %doc README COPYING README.mysql-license
@@ -721,6 +727,16 @@ fi
 %{_mandir}/man1/mysql_client_test.1*
 
 %changelog
+* Thu May 10 2018 Michal Schorm <mschorm@redhat.com> - 1:5.5.60-1
+- Rebase to 5.5.60
+- CVE's fixed: #1558256, #1558260, #1559060
+  CVE-2017-3636 CVE-2017-3641 CVE-2017-3653 CVE-2017-10379
+  CVE-2017-10384 CVE-2017-10378 CVE-2017-10268 CVE-2018-2562
+  CVE-2018-2622 CVE-2018-2640 CVE-2018-2665 CVE-2018-2668
+  CVE-2018-2755 CVE-2018-2819 CVE-2018-2817 CVE-2018-2761
+  CVE-2018-2781 CVE-2018-2771 CVE-2018-2813
+- Resolves: #1535217, #1491833, #1511982, #1145455, #1461692
+
 * Thu Jun 08 2017 Honza Horak <hhorak@redhat.com> - 1:5.5.56-2
 - Do not fix context and change owner if run by root in mariadb-prepare-db-dir
   Related: #1458940

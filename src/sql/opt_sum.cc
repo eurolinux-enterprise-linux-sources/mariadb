@@ -253,6 +253,8 @@ int opt_sum_query(THD *thd,
   int error= 0;
   DBUG_ENTER("opt_sum_query");
 
+  thd->lex->current_select->min_max_opt_list.empty();
+
   if (conds)
     where_tables= conds->used_tables();
 
@@ -444,7 +446,14 @@ int opt_sum_query(THD *thd,
           item_sum->aggregator_clear();
         }
         else
+        {
           item_sum->reset_and_add();
+          /*
+            Save a reference to the item for possible rollback
+            of the min/max optimizations for this select
+          */
+	  thd->lex->current_select->min_max_opt_list.push_back(item_sum);
+        }
         item_sum->make_const();
         recalc_const_item= 1;
         break;
@@ -1038,6 +1047,7 @@ static int maxmin_in_range(bool max_fl, Field* field, COND *cond)
   case Item_func::LT_FUNC:
   case Item_func::LE_FUNC:
     less_fl= 1;
+    /* fall through */
   case Item_func::GT_FUNC:
   case Item_func::GE_FUNC:
   {

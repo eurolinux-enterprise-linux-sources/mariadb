@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2016, MariaDB
+   Copyright (c) 2010, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -4397,7 +4397,7 @@ bool mysql_create_table_no_lock(THD *thd,
   /* Give warnings for not supported table options */
 #if defined(WITH_ARIA_STORAGE_ENGINE)
   extern handlerton *maria_hton;
-  if (file->ht != maria_hton)
+  if (file->partition_ht() != maria_hton)
 #endif
     if (create_info->transactional)
       push_warning_printf(thd, MYSQL_ERROR::WARN_LEVEL_WARN,
@@ -5504,7 +5504,7 @@ bool alter_table_manage_keys(TABLE *table, int indexes_were_disabled,
   case LEAVE_AS_IS:
     if (!indexes_were_disabled)
       break;
-    /* fall-through: disabled indexes */
+    /* fall-through */
   case DISABLE:
     error= table->file->ha_disable_indexes(HA_KEY_SWITCH_NONUNIQ_SAVE);
   }
@@ -5739,9 +5739,25 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   {
     if (def->change && ! def->field)
     {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), def->change,
-               table->s->table_name.str);
-      goto err;
+      /*
+        Check if there is modify for newly added field.
+      */
+      Create_field *find;
+      find_it.rewind();
+      while((find=find_it++))
+      {
+        if (!my_strcasecmp(system_charset_info,find->field_name, def->field_name))
+          break;
+      }
+
+      if (find && !find->field)
+	find_it.remove();
+      else
+      {
+        my_error(ER_BAD_FIELD_ERROR, MYF(0), def->change,
+                 table->s->table_name.str);
+        goto err;
+      }
     }
     /*
       Check that the DATE/DATETIME not null field we are going to add is
@@ -5792,6 +5808,29 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
         as it always changes table data.
       */
       alter_info->change_level= ALTER_TABLE_DATA_CHANGED;
+    }
+    /*
+      Check if there is alter for newly added field.
+    */
+    alter_it.rewind();
+    Alter_column *alter;
+    while ((alter=alter_it++))
+    {
+      if (!my_strcasecmp(system_charset_info,def->field_name, alter->name))
+        break;
+    }
+    if (alter)
+    {
+      if (def->sql_type == MYSQL_TYPE_BLOB)
+      {
+        my_error(ER_BLOB_CANT_HAVE_DEFAULT, MYF(0), def->change);
+        goto err;
+      }
+      if ((def->def=alter->def))              // Use new default
+        def->flags&= ~NO_DEFAULT_VALUE_FLAG;
+      else
+        def->flags|= NO_DEFAULT_VALUE_FLAG;
+      alter_it.remove();
     }
   }
   if (alter_info->alter_list.elements)

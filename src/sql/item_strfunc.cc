@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2017, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2017, MariaDB
+   Copyright (c) 2009, 2018, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -265,9 +265,9 @@ String *Item_func_sha2::val_str_ascii(String *str)
   size_t input_len;
   uint digest_length= 0;
 
+  input_string= args[0]->val_str(str);
   str->set_charset(&my_charset_bin);
 
-  input_string= args[0]->val_str(str);
   if (input_string == NULL)
   {
     null_value= TRUE;
@@ -4430,7 +4430,7 @@ bool Item_dyncol_get::get_date(MYSQL_TIME *ltime, ulonglong fuzzy_date)
     goto null;
   case DYN_COL_INT:
     signed_value= 1;                                  // For error message
-    /* fall_trough */
+    /* fall through */
   case DYN_COL_UINT:
     if (signed_value || val.x.ulong_value <= LONGLONG_MAX)
     {
@@ -4443,7 +4443,7 @@ bool Item_dyncol_get::get_date(MYSQL_TIME *ltime, ulonglong fuzzy_date)
     }
     /* let double_to_datetime_with_warn() issue the warning message */
     val.x.double_value= static_cast<double>(ULONGLONG_MAX);
-    /* fall_trough */
+    /* fall through */
   case DYN_COL_DOUBLE:
     if (double_to_datetime_with_warn(val.x.double_value, ltime, fuzzy_date,
                                      0 /* TODO */))

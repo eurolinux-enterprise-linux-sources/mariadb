@@ -7116,3 +7116,59 @@ SELECT * FROM t1 WHERE f2 <= SOME ( SELECT f1 FROM t1 );
 f1	f2
 foo	bar
 DROP TABLE t1;
+#
+# MDEV-10146: Wrong result (or questionable result and behavior)
+# with aggregate function in uncorrelated SELECT subquery
+#
+CREATE TABLE t1 (f1 INT);
+CREATE VIEW v1 AS SELECT * FROM t1;
+INSERT INTO t1 VALUES (1),(2);
+CREATE TABLE t2 (f2 int);
+INSERT INTO t2 VALUES (3);
+SELECT ( SELECT MAX(f1) FROM t2 ) FROM t1;
+( SELECT MAX(f1) FROM t2 )
+2
+SELECT ( SELECT MAX(f1) FROM t2 ) FROM v1;
+( SELECT MAX(f1) FROM t2 )
+2
+INSERT INTO t2 VALUES (4);
+SELECT ( SELECT MAX(f1) FROM t2 ) FROM v1;
+ERROR 21000: Subquery returns more than 1 row
+SELECT ( SELECT MAX(f1) FROM t2 ) FROM t1;
+ERROR 21000: Subquery returns more than 1 row
+drop view v1;
+drop table t1,t2;
+CREATE TABLE t1 (f1 INT, KEY(f1)) ENGINE=MyISAM;
+INSERT t1 VALUES (4),(8);
+CREATE TABLE t2 (f2 INT, KEY(f2)) ENGINE=MyISAM;
+INSERT t2 VALUES (6),(9);
+SELECT (SELECT MAX(sq.f2) FROM t1) FROM (SELECT * FROM t2) AS sq WHERE f2 = 2;
+(SELECT MAX(sq.f2) FROM t1)
+NULL
+drop table t1, t2;
+#
+# MDEV-13933: Wrong results in COUNT() query with EXISTS and exists_to_in
+# (5.5 test)
+#
+SET @optimiser_switch_save= @@optimizer_switch;
+CREATE TABLE t1 (a INT NOT NULL);
+INSERT INTO t1 VALUES (1),(1),(1),(5),(5);
+CREATE TABLE t2 (b INT);
+INSERT INTO t2 VALUES (5),(1);
+CREATE TABLE t3 (c INT, KEY(c));
+INSERT INTO t3 VALUES (5),(5);
+SET optimizer_switch='semijoin=on';
+select t1.a from t1 where t1.a in (select `test`.`t2`.`b` from `test`.`t2`)
+and t1.a in (select `test`.`t3`.`c` from `test`.`t3`);
+a
+5
+5
+SET optimizer_switch='semijoin=off';
+select t1.a from t1 where t1.a in (select `test`.`t2`.`b` from `test`.`t2`)
+and t1.a in (select `test`.`t3`.`c` from `test`.`t3`);
+a
+5
+5
+SET @@optimizer_switch= @optimiser_switch_save;
+DROP TABLE t1, t2, t3;
+End of 5.5 tests

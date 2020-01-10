@@ -4212,15 +4212,11 @@ size_number:
               switch (end_ptr[0])
               {
                 case 'g':
-                case 'G':
-                  text_shift_number+=10;
+                case 'G': text_shift_number+=30; break;
                 case 'm':
-                case 'M':
-                  text_shift_number+=10;
+                case 'M': text_shift_number+=20; break;
                 case 'k':
-                case 'K':
-                  text_shift_number+=10;
-                  break;
+                case 'K': text_shift_number+=10; break;
                 default:
                 {
                   my_error(ER_WRONG_SIZE_NUMBER, MYF(0));
@@ -4683,18 +4679,8 @@ opt_part_values:
             partition_info *part_info= lex->part_info;
             if (! lex->is_partition_management())
             {
-              if (part_info->part_type == RANGE_PARTITION)
-              {
-                my_error(ER_PARTITION_REQUIRES_VALUES_ERROR, MYF(0),
-                         "RANGE", "LESS THAN");
-                MYSQL_YYABORT;
-              }
-              if (part_info->part_type == LIST_PARTITION)
-              {
-                my_error(ER_PARTITION_REQUIRES_VALUES_ERROR, MYF(0),
-                         "LIST", "IN");
-                MYSQL_YYABORT;
-              }
+              if (part_info->error_if_requires_values())
+                 MYSQL_YYABORT;
             }
             else
               part_info->part_type= HASH_PARTITION;
@@ -13581,6 +13567,11 @@ option_value:
         | '@' '@' opt_var_ident_type internal_variable_name equal set_expr_or_default
           {
             struct sys_var_with_base tmp= $4;
+            if (tmp.var == trg_new_row_fake_var)
+            {
+              my_error(ER_UNKNOWN_SYSTEM_VARIABLE, MYF(0), "NEW");
+              MYSQL_YYABORT;
+            }
             /* Lookup if necessary: must be a system variable. */
             if (tmp.var == NULL)
             {

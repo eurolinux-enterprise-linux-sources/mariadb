@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2016, MariaDB
+   Copyright (c) 2010, 2018, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -548,7 +548,7 @@ public:
   }
   static void *operator new(size_t size, MEM_ROOT *mem_root) throw ()
   { return (void*) alloc_root(mem_root, (uint) size); }
-  static void operator delete(void *ptr,size_t size) { TRASH(ptr, size); }
+  static void operator delete(void *ptr,size_t size) { TRASH_FREE(ptr, size); }
   static void operator delete(void *ptr, MEM_ROOT *mem_root) {}
 
   // Ensures that at least all members used during cleanup() are initialized.
@@ -758,6 +758,7 @@ public:
   Group_list_ptrs        *group_list_ptrs;
 
   List<Item>          item_list;  /* list of fields & expressions */
+  List<Item>          pre_fix; /* above list before fix_fields */
   List<String>        interval_list;
   bool	              is_item_list_lookup;
   /* 
@@ -766,6 +767,11 @@ public:
   */
   List<Item_func_match> *ftfunc_list;
   List<Item_func_match> ftfunc_list_alloc;
+  /*
+    The list of items to which MIN/MAX optimizations of opt_sum_query()
+    have been applied. Used to rollback those optimizations if it's needed.
+  */
+  List<Item_sum> min_max_opt_list;
   JOIN *join; /* after JOIN::prepare it is pointer to corresponding JOIN */
   List<TABLE_LIST> top_join_list; /* join list of the top level          */
   List<TABLE_LIST> *join_list;    /* list for the currently parsed join  */
@@ -2943,7 +2949,7 @@ struct st_lex_local: public LEX
     return (void*) alloc_root(mem_root, (uint) size);
   }
   static void operator delete(void *ptr,size_t size)
-  { TRASH(ptr, size); }
+  { TRASH_FREE(ptr, size); }
   static void operator delete(void *ptr, MEM_ROOT *mem_root)
   { /* Never called */ }
 };

@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016 Oracle and/or its affiliates.
-   Copyright (c) 2009, 2016 MariaDB
+   Copyright (c) 2009, 2018 MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -279,6 +279,10 @@ enum enum_exec_or_opt {WALK_OPTIMIZATION_TABS , WALK_EXECUTION_TABS};
 JOIN_TAB *first_breadth_first_tab(JOIN *join, enum enum_exec_or_opt tabs_kind);
 JOIN_TAB *next_breadth_first_tab(JOIN *join, enum enum_exec_or_opt tabs_kind,
                                  JOIN_TAB *tab);
+static bool
+find_order_in_list(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
+                   ORDER *order, List<Item> &fields, List<Item> &all_fields,
+                   bool is_group_field, bool add_to_all_fields);
 
 /**
   This handles SELECT with and without UNION.
@@ -634,6 +638,9 @@ JOIN::prepare(Item ***rref_pointer_array,
   join_list= &select_lex->top_join_list;
   union_part= unit_arg->is_union();
 
+  // simple check that we got usable conds
+  dbug_print_item(conds);
+
   if (select_lex->handle_derived(thd->lex, DT_PREPARE))
     DBUG_RETURN(1);
 
@@ -696,12 +703,11 @@ JOIN::prepare(Item ***rref_pointer_array,
   }
 
   table_count= select_lex->leaf_tables.elements;
- 
+
   TABLE_LIST *tbl;
   List_iterator_fast<TABLE_LIST> li(select_lex->leaf_tables);
   while ((tbl= li++))
   {
-    //table_count++; /* Count the number of tables in the join. */
     /*
       If the query uses implicit grouping where the select list contains both
       aggregate functions and non-aggregate fields, any non-aggregated field
@@ -724,7 +730,7 @@ JOIN::prepare(Item ***rref_pointer_array,
                               wild_num)) ||
       select_lex->setup_ref_array(thd, real_og_num) ||
       setup_fields(thd, (*rref_pointer_array), fields_list, MARK_COLUMNS_READ,
-		   &all_fields, 1) ||
+		   &all_fields, &select_lex->pre_fix, 1) ||
       setup_without_group(thd, (*rref_pointer_array), tables_list,
 			  select_lex->leaf_tables, fields_list,
 			  all_fields, &conds, order, group_list,
@@ -736,9 +742,15 @@ JOIN::prepare(Item ***rref_pointer_array,
   /* Resolve the ORDER BY that was skipped, then remove it. */
   if (skip_order_by && select_lex != select_lex->master_unit()->global_parameters)
   {
-    if (setup_order(thd, (*rref_pointer_array), tables_list, fields_list,
-                    all_fields, select_lex->order_list.first))
-      DBUG_RETURN(-1);
+    thd->where= "order clause";
+    for (ORDER *order= select_lex->order_list.first; order; order= order->next)
+    {
+      /* Don't add the order items to all fields. Just resolve them to ensure
+         the query is valid, we'll drop them immediately after. */
+      if (find_order_in_list(thd, *rref_pointer_array, tables_list, order,
+                             fields_list, all_fields, false, false))
+        DBUG_RETURN(-1);
+    }
     select_lex->order_list.empty();
   }
 
@@ -1195,6 +1207,7 @@ JOIN::optimize()
       DBUG_PRINT("info",("Select tables optimized away"));
       zero_result_cause= "Select tables optimized away";
       tables_list= 0;				// All tables resolved
+      select_lex->min_max_opt_list.empty();
       const_tables= top_join_tab_count= table_count;
       /*
         Extract all table-independent conditions and replace the WHERE
@@ -2084,8 +2097,11 @@ bool JOIN::shrink_join_buffers(JOIN_TAB *jt,
                                ulonglong curr_space,
                                ulonglong needed_space)
 {
+  JOIN_TAB *tab;
   JOIN_CACHE *cache;
-  for (JOIN_TAB *tab= join_tab+const_tables; tab < jt; tab++)
+  for (tab= first_linear_tab(this, WITHOUT_BUSH_ROOTS, WITHOUT_CONST_TABLES);
+       tab != jt;
+       tab= next_linear_tab(this, tab, WITHOUT_BUSH_ROOTS))
   {
     cache= tab->cache;
     if (cache)
@@ -2758,8 +2774,11 @@ JOIN::exec()
       if (sort_table_cond)
       {
 	if (!curr_table->select)
+	{
 	  if (!(curr_table->select= new SQL_SELECT))
 	    DBUG_VOID_RETURN;
+	  curr_table->select->head= curr_table->table;
+        }
 	if (!curr_table->select->cond)
 	  curr_table->select->cond= sort_table_cond;
 	else
@@ -2845,7 +2864,7 @@ JOIN::exec()
 			    curr_join->select_limit,
 			    (select_options & OPTION_FOUND_ROWS ?
 			     HA_POS_ERROR : unit->select_limit_cnt),
-                            curr_join->group_list ? TRUE : FALSE))
+                            curr_join->group_list ? FALSE : TRUE))
 	DBUG_VOID_RETURN;
       sortorder= curr_join->sortorder;
       if (curr_join->const_tables != curr_join->table_count &&
@@ -7361,6 +7380,63 @@ bool JOIN_TAB::hash_join_is_possible()
 }
 
 
+/**
+  @brief
+  Check whether a KEYUSE can be really used for access this join table 
+
+  @param join    Join structure with the best join order 
+                 for which the check is performed
+  @param keyuse  Evaluated KEYUSE structure    
+
+  @details
+  This function is supposed to be used after the best execution plan have been
+  already chosen and the JOIN_TAB array for the best join order been already set.
+  For a given KEYUSE to access this JOIN_TAB in the best execution plan the
+  function checks whether it really can be used. The function first performs
+  the check with access_from_tables_is_allowed(). If it succeeds it checks
+  whether the keyuse->val does not use some fields of a materialized semijoin
+  nest that cannot be used to build keys to access outer tables.
+  Such KEYUSEs exists for the query like this:
+    select * from ot 
+    where ot.c in (select it1.c from it1, it2 where it1.c=f(it2.c))
+  Here we have two KEYUSEs to access table ot: with val=it1.c and val=f(it2.c).
+  However if the subquery was materialized the second KEYUSE cannot be employed
+  to access ot.
+
+  @retval true  the given keyuse can be used for ref access of this JOIN_TAB 
+  @retval false otherwise
+*/
+
+bool JOIN_TAB::keyuse_is_valid_for_access_in_chosen_plan(JOIN *join,
+                                                         KEYUSE *keyuse)
+{
+  if (!access_from_tables_is_allowed(keyuse->used_tables, 
+                                     join->sjm_lookup_tables))
+    return false;
+  if (join->sjm_scan_tables & table->map)
+    return true;
+  table_map keyuse_sjm_scan_tables= keyuse->used_tables &
+                                    join->sjm_scan_tables;
+  if (!keyuse_sjm_scan_tables)
+    return true;
+  uint sjm_tab_nr= 0;
+  while (!(keyuse_sjm_scan_tables & table_map(1) << sjm_tab_nr))
+    sjm_tab_nr++;
+  JOIN_TAB *sjm_tab= join->map2table[sjm_tab_nr];
+  TABLE_LIST *emb_sj_nest= sjm_tab->emb_sj_nest;    
+  if (!(emb_sj_nest->sj_mat_info && emb_sj_nest->sj_mat_info->is_used &&
+        emb_sj_nest->sj_mat_info->is_sj_scan))
+    return true;
+  st_select_lex *sjm_sel= emb_sj_nest->sj_subq_pred->unit->first_select(); 
+  for (uint i= 0; i < sjm_sel->item_list.elements; i++)
+  {
+    if (sjm_sel->ref_pointer_array[i] == keyuse->val)
+      return true;
+  }
+  return false; 
+}
+
+
 static uint
 cache_record_length(JOIN *join,uint idx)
 {
@@ -7844,12 +7920,14 @@ get_best_combination(JOIN *join)
   {
     if (j->bush_children)
       j= j->bush_children->start;
-      
+    
     used_tables|= j->table->map;
-    if ((keyuse= join->best_positions[tablenr].key) &&
-        create_ref_for_key(join, j, keyuse, TRUE, used_tables))
-     DBUG_RETURN(TRUE);              // Something went wrong
-
+    if (j->type != JT_CONST && j->type != JT_SYSTEM)
+    {
+      if ((keyuse= join->best_positions[tablenr].key) &&
+          create_ref_for_key(join, j, keyuse, TRUE, used_tables))
+        DBUG_RETURN(TRUE);              // Something went wrong
+    }
     if (j->last_leaf_in_bush)
       j= j->bush_root_tab;
   }
@@ -7902,6 +7980,7 @@ static bool create_hj_key_for_table(JOIN *join, JOIN_TAB *join_tab,
   do
   {
     if (!(~used_tables & keyuse->used_tables) &&
+        join_tab->keyuse_is_valid_for_access_in_chosen_plan(join, keyuse) &&
         are_tables_local(join_tab, keyuse->used_tables))    
     {
       if (first_keyuse)
@@ -7916,6 +7995,8 @@ static bool create_hj_key_for_table(JOIN *join, JOIN_TAB *join_tab,
         {
           if (curr->keypart == keyuse->keypart &&
               !(~used_tables & curr->used_tables) &&
+              join_tab->keyuse_is_valid_for_access_in_chosen_plan(join,
+                                                                  keyuse) &&
               are_tables_local(join_tab, curr->used_tables))
             break;
         }
@@ -7949,6 +8030,7 @@ static bool create_hj_key_for_table(JOIN *join, JOIN_TAB *join_tab,
   do
   {
     if (!(~used_tables & keyuse->used_tables) &&
+        join_tab->keyuse_is_valid_for_access_in_chosen_plan(join, keyuse) &&
         are_tables_local(join_tab, keyuse->used_tables))
     { 
       bool add_key_part= TRUE;
@@ -7958,7 +8040,9 @@ static bool create_hj_key_for_table(JOIN *join, JOIN_TAB *join_tab,
         {
           if (curr->keypart == keyuse->keypart &&
               !(~used_tables & curr->used_tables) &&
-               are_tables_local(join_tab, curr->used_tables))
+              join_tab->keyuse_is_valid_for_access_in_chosen_plan(join,
+                                                                  curr) &&
+              are_tables_local(join_tab, curr->used_tables))
 	  {
             keyuse->keypart= NO_KEYPART;
             add_key_part= FALSE;
@@ -8060,8 +8144,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
     do
     {
       if (!(~used_tables & keyuse->used_tables) &&
-          j->access_from_tables_is_allowed(keyuse->used_tables,
-                                           join->sjm_lookup_tables))
+	  j->keyuse_is_valid_for_access_in_chosen_plan(join, keyuse))
       {
         if  (are_tables_local(j, keyuse->val->used_tables()))
         {
@@ -8130,8 +8213,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
     for (i=0 ; i < keyparts ; keyuse++,i++)
     {
       while (((~used_tables) & keyuse->used_tables) ||
-	     !j->access_from_tables_is_allowed(keyuse->used_tables,
-                                               join->sjm_lookup_tables) ||    
+	     !j->keyuse_is_valid_for_access_in_chosen_plan(join, keyuse) ||
              keyuse->keypart == NO_KEYPART ||
 	     (keyuse->keypart != 
               (is_hash_join_key_no(key) ?
@@ -8759,12 +8841,20 @@ make_join_select(JOIN *join,SQL_SELECT *select,COND *cond)
     /*
       Step #2: Extract WHERE/ON parts
     */
+    uint i;
+    for (i= join->top_join_tab_count - 1; i >= join->const_tables; i--)
+    {
+      if (!join->join_tab[i].bush_children)
+        break;
+    }
+    uint last_top_base_tab_idx= i;
+
     table_map save_used_tables= 0;
     used_tables=((select->const_tables=join->const_table_map) |
 		 OUTER_REF_TABLE_BIT | RAND_TABLE_BIT);
     JOIN_TAB *tab;
     table_map current_map;
-    uint i= join->const_tables;
+    i= join->const_tables;
     for (tab= first_depth_first_tab(join); tab;
          tab= next_depth_first_tab(join, tab), i++)
     {
@@ -8802,7 +8892,7 @@ make_join_select(JOIN *join,SQL_SELECT *select,COND *cond)
 	Following force including random expression in last table condition.
 	It solve problem with select like SELECT * FROM t1 WHERE rand() > 0.5
       */
-      if (tab == join->join_tab + join->top_join_tab_count - 1)
+      if (tab == join->join_tab + last_top_base_tab_idx)
         current_map|= RAND_TABLE_BIT;
       used_tables|=current_map;
 
@@ -8841,10 +8931,10 @@ make_join_select(JOIN *join,SQL_SELECT *select,COND *cond)
           save_used_tables= 0;
         }
         else
-         {
-	  tmp= make_cond_for_table(thd, cond, used_tables, current_map, i,
+        {
+          tmp= make_cond_for_table(thd, cond, used_tables, current_map, i,
                                    FALSE, FALSE);
-         }
+        }
         /* Add conditions added by add_not_null_conds(). */
         if (tab->select_cond)
           add_cond_and_fix(thd, &tmp, tab->select_cond);
@@ -9435,7 +9525,7 @@ void JOIN::drop_unused_derived_keys()
       table->use_index(tab->ref.key);
     if (table->s->keys)
     {
-      if (tab->ref.key >= 0)
+      if (tab->ref.key >= 0 && tab->ref.key < MAX_KEY)
         tab->ref.key= 0;
       else
         table->s->keys= 0;
@@ -11147,8 +11237,8 @@ static void update_depend_map(JOIN *join)
     uint i;
     for (i=0 ; i < ref->key_parts ; i++,item++)
       depend_map|=(*item)->used_tables();
-    ref->depend_map=depend_map & ~OUTER_REF_TABLE_BIT;
     depend_map&= ~OUTER_REF_TABLE_BIT;
+    ref->depend_map= depend_map;
     for (JOIN_TAB **tab=join->map2table;
          depend_map ;
          tab++,depend_map>>=1 )
@@ -11452,7 +11542,7 @@ public:
   }
   static void operator delete(void *ptr __attribute__((unused)),
                               size_t size __attribute__((unused)))
-  { TRASH(ptr, size); }
+  { TRASH_FREE(ptr, size); }
 
   Item *and_level;
   Item_func *cmp_func;
@@ -13274,10 +13364,23 @@ simplify_joins(JOIN *join, List<TABLE_LIST> *join_list, COND *conds, bool top,
     nested_join= table->nested_join;
     if (table->sj_on_expr && !in_sj)
     {
-       /*
-         If this is a semi-join that is not contained within another semi-join, 
-         leave it intact (otherwise it is flattened)
-       */
+      /*
+        If this is a semi-join that is not contained within another semi-join
+        leave it intact (otherwise it is flattened)
+      */
+      /*
+        Make sure that any semi-join appear in
+        the join->select_lex->sj_nests list only once
+      */
+      List_iterator_fast<TABLE_LIST> sj_it(join->select_lex->sj_nests);
+      TABLE_LIST *sj_nest;
+      while ((sj_nest= sj_it++))
+      {
+        if (table == sj_nest)
+          break;
+      }
+      if (sj_nest)
+        continue;
       join->select_lex->sj_nests.push_back(table);
 
       /* 
@@ -13892,9 +13995,9 @@ bool cond_is_datetime_is_null(Item *cond)
       ((Item_func*) cond)->functype() == Item_func::ISNULL_FUNC)
   {
     Item **args= ((Item_func_isnull*) cond)->arguments();
-    if (args[0]->type() == Item::FIELD_ITEM)
+    if (args[0]->real_item()->type() == Item::FIELD_ITEM)
     {
-      Field *field=((Item_field*) args[0])->field;
+      Field *field=((Item_field*) (args[0]->real_item()))->field;
 
       if (((field->type() == MYSQL_TYPE_DATE) ||
            (field->type() == MYSQL_TYPE_DATETIME)) &&
@@ -14220,14 +14323,14 @@ internal_remove_eq_conds(THD *thd, COND *cond, Item::cond_result *cond_value)
 
     */
     Item **args= ((Item_func_isnull*) cond)->arguments();
-    Field *field=((Item_field*) args[0])->field;
+    Field *field=((Item_field*) (args[0]->real_item()))->field;
 
     Item *item0= new(thd->mem_root) Item_int((longlong)0, 1);
     Item *eq_cond= new(thd->mem_root) Item_func_eq(args[0], item0);
     if (!eq_cond)
       return cond;
 
-        if (field->table->pos_in_table_list->is_inner_table_of_outer_join())
+    if (field->table->pos_in_table_list->is_inner_table_of_outer_join())
     {
       // outer join: transform "col IS NULL" to "col IS NULL or col=0"
       Item *or_cond= new(thd->mem_root) Item_cond_or(eq_cond, cond);
@@ -15449,7 +15552,7 @@ create_tmp_table(THD *thd, TMP_TABLE_PARAM *param, List<Item> &fields,
       else
       {
         field->set_notnull();
-        memcpy(field->ptr, orig_field->ptr, field->pack_length());
+        memcpy(field->ptr, orig_field->ptr, field->pack_length_in_rec());
       }
       orig_field->move_field_offset(-diff);     // Back to record[0]
     } 
@@ -20535,7 +20638,10 @@ cp_buffer_from_ref(THD *thd, TABLE *table, TABLE_REF *ref)
     SELECT list)
   @param[in,out] all_fields         All select, group and order by fields
   @param[in] is_group_field         True if order is a GROUP field, false if
-    ORDER by field
+                                    ORDER by field
+  @param[in] add_to_all_fields      If the item is to be added to all_fields and
+                                    ref_pointer_array, this flag can be set to
+                                    false to stop the automatic insertion.
 
   @retval
     FALSE if OK
@@ -20546,7 +20652,7 @@ cp_buffer_from_ref(THD *thd, TABLE *table, TABLE_REF *ref)
 static bool
 find_order_in_list(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
                    ORDER *order, List<Item> &fields, List<Item> &all_fields,
-                   bool is_group_field)
+                   bool is_group_field, bool add_to_all_fields)
 {
   Item *order_item= *order->item; /* The item from the GROUP/ORDER caluse. */
   Item::Type order_item_type;
@@ -20665,6 +20771,9 @@ find_order_in_list(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
        thd->is_error()))
     return TRUE; /* Wrong field. */
 
+  if (!add_to_all_fields)
+    return FALSE;
+
   uint el= all_fields.elements;
   DBUG_ASSERT(all_fields.elements <=
               thd->lex->current_select->ref_pointer_array_size);
@@ -20694,13 +20803,13 @@ find_order_in_list(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
 */
 
 int setup_order(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
-		List<Item> &fields, List<Item> &all_fields, ORDER *order)
+                List<Item> &fields, List<Item> &all_fields, ORDER *order)
 {
   thd->where="order clause";
   for (; order; order=order->next)
   {
     if (find_order_in_list(thd, ref_pointer_array, tables, order, fields,
-			   all_fields, FALSE))
+                           all_fields, FALSE, true))
       return 1;
   }
   return 0;
@@ -20752,7 +20861,7 @@ setup_group(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
   for (ord= order; ord; ord= ord->next)
   {
     if (find_order_in_list(thd, ref_pointer_array, tables, ord, fields,
-			   all_fields, TRUE))
+                           all_fields, TRUE, true))
       return 1;
     (*ord->item)->marker= UNDEF_POS;		/* Mark found */
     if ((*ord->item)->with_sum_func)
@@ -21071,6 +21180,7 @@ get_sort_by_table(ORDER *a,ORDER *b, List<TABLE_LIST> &tables,
   if (!map || (map & (RAND_TABLE_BIT | OUTER_REF_TABLE_BIT)))
     DBUG_RETURN(0);
 
+  map&= ~const_tables;
   while ((table= ti++) && !(map & table->table->map)) ;
   if (map != table->table->map)
     DBUG_RETURN(0);				// More than one table

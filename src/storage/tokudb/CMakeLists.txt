@@ -1,6 +1,6 @@
 # ft-index only supports x86-64 and cmake-2.8.9+
 IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND
-    NOT CMAKE_VERSION VERSION_LESS "2.8.9")
+    NOT CMAKE_VERSION VERSION_LESS "2.8.9" AND HAVE_DLOPEN)
 CHECK_CXX_SOURCE_COMPILES(
 "
 struct a {int b; int c; };
@@ -100,6 +100,7 @@ endmacro(append_cflags_if_supported)
 
 set_cflags_if_supported(-Wno-missing-field-initializers)
 append_cflags_if_supported(-Wno-vla)
+append_cflags_if_supported(-Wno-implicit-fallthrough)
 
 ADD_SUBDIRECTORY(ft-index)
 

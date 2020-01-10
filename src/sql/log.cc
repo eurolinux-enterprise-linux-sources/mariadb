@@ -4887,13 +4887,20 @@ int THD::binlog_write_table_map(TABLE *table, bool is_transactional,
 
   IO_CACHE *file=
     cache_mngr->get_binlog_cache_log(use_trans_cache(this, is_transactional));
+  binlog_cache_data *cache_data=
+    cache_mngr->get_binlog_cache_data(use_trans_cache(this, is_transactional));
+
   if (with_annotate && *with_annotate)
   {
     Annotate_rows_log_event anno(current_thd, is_transactional, false);
     /* Annotate event should be written not more than once */
     *with_annotate= 0;
     if ((error= anno.write(file)))
+    {
+      if (my_errno == EFBIG)
+        cache_data->set_incident();
       DBUG_RETURN(error);
+    }
   }
   if ((error= the_event.write(file)))
     DBUG_RETURN(error);
@@ -7254,8 +7261,10 @@ void TC_LOG_MMAP::close()
     mysql_cond_destroy(&COND_pool);
     mysql_cond_destroy(&COND_active);
     mysql_cond_destroy(&COND_queue_busy);
+    /* fall through */
   case 5:
     data[0]='A'; // garble the first (signature) byte, in case mysql_file_delete fails
+    /* fall through */
   case 4:
     for (i=0; i < npages; i++)
     {
@@ -7264,10 +7273,13 @@ void TC_LOG_MMAP::close()
       mysql_mutex_destroy(&pages[i].lock);
       mysql_cond_destroy(&pages[i].cond);
     }
+    /* fall through */
   case 3:
     my_free(pages);
+    /* fall through */
   case 2:
     my_munmap((char*)data, (size_t)file_length);
+    /* fall through */
   case 1:
     mysql_file_close(fd, MYF(0));
   }

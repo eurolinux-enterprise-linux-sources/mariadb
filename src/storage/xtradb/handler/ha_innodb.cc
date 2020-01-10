@@ -5800,8 +5800,8 @@ build_template_field(
 	}
 
 	templ->charset = dtype_get_charset_coll(col->prtype);
-	templ->mbminlen = DATA_MBMINLEN(col->mbminmaxlen);
-	templ->mbmaxlen = DATA_MBMAXLEN(col->mbminmaxlen);
+	templ->mbminlen = col->mbminlen;
+	templ->mbmaxlen = col->mbmaxlen;
 	templ->is_unsigned = col->prtype & DATA_UNSIGNED;
 
 	if (!dict_index_is_clust(index)
@@ -6144,7 +6144,7 @@ ha_innobase::innobase_lock_autoinc(void)
 				break;
 			}
 		}
-		/* Fall through to old style locking. */
+		/* fall through */
 
 	case AUTOINC_OLD_STYLE_LOCKING:
 		error = row_lock_table_autoinc_for_mysql(prebuilt);
@@ -8190,7 +8190,7 @@ create_options_are_valid(
 	case ROW_TYPE_DYNAMIC:
 		CHECK_ERROR_ROW_TYPE_NEEDS_FILE_PER_TABLE;
 		CHECK_ERROR_ROW_TYPE_NEEDS_GT_ANTELOPE;
-		/* fall through since dynamic also shuns KBS */
+		/* fall through */ /* since dynamic also shuns KBS */
 	case ROW_TYPE_COMPACT:
 	case ROW_TYPE_REDUNDANT:
 		if (kbs_specified) {
@@ -8436,6 +8436,7 @@ ha_innobase::create(
 			thd, MYSQL_ERROR::WARN_LEVEL_WARN,
 			ER_ILLEGAL_HA_CREATE_OPTION,
 			"InnoDB: assuming ROW_FORMAT=COMPACT.");
+		/* fall through */
 	case ROW_TYPE_DEFAULT:
 	case ROW_TYPE_COMPACT:
 		flags = DICT_TF_COMPACT;
@@ -12477,6 +12478,17 @@ ha_innobase::check_if_incompatible_data(
 
 	DBUG_PRINT("info", (" -> COMPATIBLE_DATA_YES"));
 	DBUG_RETURN(COMPATIBLE_DATA_YES);
+}
+
+UNIV_INTERN
+uint
+ha_innobase::alter_table_flags(uint flags)
+{
+	uint mask = 0;
+	if (prebuilt->table->n_mysql_handles_opened > 1) {
+		mask = HA_INPLACE_ADD_PK_INDEX_NO_READ_WRITE;
+	}
+	return innobase_alter_table_flags(flags) & ~mask;
 }
 
 /************************************************************//**

@@ -1,5 +1,5 @@
 /* Copyright (c) 2010, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2011, 2016, MariaDB
+   Copyright (c) 2011, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,7 +54,6 @@ static bool admin_recreate_table(THD *thd, TABLE_LIST *table_list)
   if (thd->stmt_da->is_ok())
     thd->stmt_da->reset_diagnostics_area();
   table_list->table= NULL;
-  result_code= result_code ? HA_ADMIN_FAILED : HA_ADMIN_OK;
   DBUG_RETURN(result_code);
 }
 

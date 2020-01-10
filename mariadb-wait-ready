@@ -35,7 +35,7 @@ while /bin/true; do
             ret=1
             break
 	fi
-	RESPONSE=`/usr/bin/mysqladmin --no-defaults --socket="$socketfile" --user=UNKNOWN_MYSQL_USER ping 2>&1`
+	RESPONSE=`/usr/bin/mysqladmin --no-defaults --connect-timeout=2 --socket="$socketfile" --user=UNKNOWN_MYSQL_USER ping 2>&1`
 	mret=$?
 	if [ $mret -eq 0 ]; then
 	    break

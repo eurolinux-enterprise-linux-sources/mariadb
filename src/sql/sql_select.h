@@ -540,6 +540,8 @@ typedef struct st_join_table {
             !(used_sjm_lookup_tables & ~emb_sj_nest->sj_inner_tables));
   }
 
+  bool keyuse_is_valid_for_access_in_chosen_plan(JOIN *join, KEYUSE *keyuse);
+
 } JOIN_TAB;
 
 
@@ -1003,6 +1005,11 @@ public:
     to materialize and access by lookups
   */
   table_map sjm_lookup_tables;
+  /** 
+    Bitmap of semijoin tables that the chosen plan decided
+    to materialize to scan the results of materialization
+  */
+  table_map sjm_scan_tables;
   /*
     Constant tables for which we have found a row (as opposed to those for
     which we didn't).
@@ -1331,6 +1338,7 @@ public:
     pre_sort_join_tab= NULL;
     emb_sjm_nest= NULL;
     sjm_lookup_tables= 0;
+    sjm_scan_tables= 0;
     /* 
       The following is needed because JOIN::cleanup(true) may be called for 
       joins for which JOIN::optimize was aborted with an error before a proper
@@ -1749,7 +1757,7 @@ int get_quick_record(SQL_SELECT *select);
 SORT_FIELD * make_unireg_sortorder(ORDER *order, uint *length,
                                   SORT_FIELD *sortorder);
 int setup_order(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
-		List<Item> &fields, List <Item> &all_fields, ORDER *order);
+                List<Item> &fields, List <Item> &all_fields, ORDER *order);
 int setup_group(THD *thd, Item **ref_pointer_array, TABLE_LIST *tables,
 		List<Item> &fields, List<Item> &all_fields, ORDER *order,
 		bool *hidden_group_fields);
