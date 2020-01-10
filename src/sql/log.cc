@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2016, MariaDB
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2019, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -2499,14 +2499,14 @@ void MYSQL_LOG::close(uint exiting)
     if (log_type == LOG_BIN && mysql_file_sync(log_file.file, MYF(MY_WME)) && ! write_error)
     {
       write_error= 1;
-      sql_print_error(ER_THD_OR_DEFAULT(current_thd, ER_ERROR_ON_WRITE), name, errno);
+      sql_print_error(ER_DEFAULT(ER_ERROR_ON_WRITE), name, errno);
     }
 
     if (!(exiting & LOG_CLOSE_DELAYED_CLOSE) &&
         mysql_file_close(log_file.file, MYF(MY_WME)) && ! write_error)
     {
       write_error= 1;
-      sql_print_error(ER_THD_OR_DEFAULT(current_thd, ER_ERROR_ON_WRITE), name, errno);
+      sql_print_error(ER_DEFAULT(ER_ERROR_ON_WRITE), name, errno);
     }
   }
 
@@ -2690,7 +2690,7 @@ err:
   if (!write_error)
   {
     write_error= 1;
-    sql_print_error(ER(ER_ERROR_ON_WRITE), name, errno);
+    sql_print_error(ER_DEFAULT(ER_ERROR_ON_WRITE), name, errno);
   }
   mysql_mutex_unlock(&LOCK_log);
   return TRUE;
@@ -2866,7 +2866,7 @@ bool MYSQL_QUERY_LOG::write(THD *thd, time_t current_time,
       if (! write_error)
       {
         write_error= 1;
-        sql_print_error(ER(ER_ERROR_ON_WRITE), name, tmp_errno);
+        sql_print_error(ER_DEFAULT(ER_ERROR_ON_WRITE), name, tmp_errno);
       }
     }
   }
@@ -3413,7 +3413,7 @@ int MYSQL_BIN_LOG::find_log_pos(LOG_INFO *linfo, const char *log_name,
     // if the log entry matches, null string matching anything
     if (!log_name ||
 	(log_name_len == fname_len-1 && full_fname[log_name_len] == '\n' &&
-	 !memcmp(full_fname, full_log_name, log_name_len)))
+	 !strncmp(full_fname, full_log_name, log_name_len)))
     {
       DBUG_PRINT("info", ("Found log file entry"));
       full_fname[fname_len-1]= 0;			// remove last \n
@@ -6385,7 +6385,7 @@ void MYSQL_BIN_LOG::close(uint exiting)
     if (mysql_file_close(index_file.file, MYF(0)) < 0 && ! write_error)
     {
       write_error= 1;
-      sql_print_error(ER(ER_ERROR_ON_WRITE), index_file_name, errno);
+      sql_print_error(ER_DEFAULT(ER_ERROR_ON_WRITE), index_file_name, errno);
     }
   }
   log_state= (exiting & LOG_CLOSE_TO_BE_OPENED) ? LOG_TO_BE_OPENED : LOG_CLOSED;

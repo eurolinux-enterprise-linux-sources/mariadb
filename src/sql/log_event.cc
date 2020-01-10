@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2000, 2018, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2018, MariaDB
+   Copyright (c) 2000, 2019, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2019, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -48,6 +48,7 @@
 #include "transaction.h"
 #include <my_dir.h>
 #include "sql_show.h"    // append_identifier
+#include "debug_sync.h"  // debug_sync
 
 #endif /* MYSQL_CLIENT */
 
@@ -245,6 +246,27 @@ static void inline slave_rows_error_report(enum loglevel level, int ha_error,
 }
 #endif
 
+#if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
+static void set_thd_db(THD *thd,const char *db, uint32 db_len)
+{
+  char lcase_db_buf[NAME_LEN +1];
+  LEX_STRING new_db;
+  new_db.length= db_len;
+  if (lower_case_table_names == 1)
+  {
+    strmov(lcase_db_buf, db);
+    my_casedn_str(system_charset_info, lcase_db_buf);
+    new_db.str= lcase_db_buf;
+  }
+  else
+    new_db.str= (char*) db;
+  /* TODO WARNING this makes rewrite_db respect lower_case_table_names values
+   * for more info look MDEV-17446 */
+   new_db.str= (char*) rpl_filter->get_rewrite_db(new_db.str,
+                                                 &new_db.length);
+  thd->set_db(new_db.str, new_db.length);
+}
+#endif
 /*
   Cache that will automatically be written to a dedicated file on
   destruction.
@@ -3619,7 +3641,6 @@ bool test_if_equal_repl_errors(int expected_error, int actual_error)
 int Query_log_event::do_apply_event(Relay_log_info const *rli,
                                       const char *query_arg, uint32 q_len_arg)
 {
-  LEX_STRING new_db;
   int expected_error,actual_error= 0;
   HA_CREATE_INFO db_options;
   DBUG_ENTER("Query_log_event::do_apply_event");
@@ -3646,9 +3667,7 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
     goto end;
   }
 
-  new_db.length= db_len;
-  new_db.str= (char *) rpl_filter->get_rewrite_db(db, &new_db.length);
-  thd->set_db(new_db.str, new_db.length);       /* allocates a copy of 'db' */
+  set_thd_db(thd, db, db_len);
 
   /*
     Setting the character set and collation of the current database thd->db.
@@ -5424,13 +5443,10 @@ void Load_log_event::set_fields(const char* affected_db,
 int Load_log_event::do_apply_event(NET* net, Relay_log_info const *rli,
                                    bool use_rli_only_for_errors)
 {
-  LEX_STRING new_db;
   DBUG_ENTER("Load_log_event::do_apply_event");
 
-  new_db.length= db_len;
-  new_db.str= (char *) rpl_filter->get_rewrite_db(db, &new_db.length);
-  thd->set_db(new_db.str, new_db.length);
   DBUG_ASSERT(thd->query() == 0);
+  set_thd_db(thd, db, db_len);
   thd->reset_query_inner();                    // Should not be needed
   thd->is_slave_error= 0;
   clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
@@ -5485,6 +5501,8 @@ int Load_log_event::do_apply_event(NET* net, Relay_log_info const *rli,
     thd->warning_info->opt_clear_warning_info(thd->query_id);
 
     TABLE_LIST tables;
+    if (lower_case_table_names)
+      my_casedn_str(system_charset_info, (char *)table_name);
     tables.init_one_table(thd->strmake(thd->db, thd->db_length),
                           thd->db_length,
                           table_name, strlen(table_name),
@@ -8495,25 +8513,28 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
     /* A small test to verify that objects have consistent types */
     DBUG_ASSERT(sizeof(thd->variables.option_bits) == sizeof(OPTION_RELAXED_UNIQUE_CHECKS));
 
+    DBUG_EXECUTE_IF("rows_log_event_before_open_table",
+                    {
+                      const char action[] = "now SIGNAL before_open_table WAIT_FOR go_ahead_sql";
+                      DBUG_ASSERT(!debug_sync_set_action(thd, STRING_WITH_LEN(action)));
+                    };);
+
     if (open_and_lock_tables(thd, rli->tables_to_lock, FALSE, 0))
     {
-      uint actual_error= thd->stmt_da->sql_errno();
-      if (thd->is_slave_error || thd->is_fatal_error)
+      if (thd->is_error())
       {
         /*
           Error reporting borrowed from Query_log_event with many excessive
-          simplifications. 
+          simplifications.
           We should not honour --slave-skip-errors at this point as we are
-          having severe errors which should not be skiped.
+          having severe errors which should not be skipped.
         */
-        rli->report(ERROR_LEVEL, actual_error,
+        rli->report(ERROR_LEVEL, thd->stmt_da->sql_errno(),
                     "Error executing row event: '%s'",
-                    (actual_error ? thd->stmt_da->message() :
-                     "unexpected success or fatal error"));
+                     thd->stmt_da->message());
         thd->is_slave_error= 1;
       }
-      const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
-      DBUG_RETURN(actual_error);
+      DBUG_RETURN(1);
     }
 
     /*
@@ -9678,7 +9699,7 @@ check_table_map(Relay_log_info const *rli, RPL_TABLE_LIST *table_list)
 int Table_map_log_event::do_apply_event(Relay_log_info const *rli)
 {
   RPL_TABLE_LIST *table_list;
-  char *db_mem, *tname_mem;
+  char *db_mem, *tname_mem, *ptr;
   size_t dummy_len;
   void *memory;
   DBUG_ENTER("Table_map_log_event::do_apply_event(Relay_log_info*)");
@@ -9694,8 +9715,17 @@ int Table_map_log_event::do_apply_event(Relay_log_info const *rli)
                                 NullS)))
     DBUG_RETURN(HA_ERR_OUT_OF_MEM);
 
-  strmov(db_mem, rpl_filter->get_rewrite_db(m_dbnam, &dummy_len));
+  strmov(db_mem, m_dbnam);
   strmov(tname_mem, m_tblnam);
+  if (lower_case_table_names)
+  {
+    my_casedn_str(files_charset_info, (char*)tname_mem);
+    my_casedn_str(files_charset_info, (char*)db_mem);
+  }
+
+  /* rewrite rules changed the database */
+  if (((ptr= (char*) rpl_filter->get_rewrite_db(db_mem, &dummy_len)) != db_mem))
+    strmov(db_mem, ptr);
 
   table_list->init_one_table(db_mem, strlen(db_mem),
                              tname_mem, strlen(tname_mem),

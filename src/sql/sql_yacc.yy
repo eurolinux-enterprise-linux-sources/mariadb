@@ -7676,14 +7676,14 @@ select_lock_type:
         | FOR_SYM UPDATE_SYM
           {
             LEX *lex=Lex;
-            lex->current_select->set_lock_for_tables(TL_WRITE);
+            lex->current_select->set_lock_for_tables(TL_WRITE, false);
             lex->safe_to_cache_query=0;
           }
         | LOCK_SYM IN_SYM SHARE_SYM MODE_SYM
           {
             LEX *lex=Lex;
             lex->current_select->
-              set_lock_for_tables(TL_READ_WITH_SHARED_LOCKS);
+              set_lock_for_tables(TL_READ_WITH_SHARED_LOCKS, false);
             lex->safe_to_cache_query=0;
           }
         ;
@@ -10966,7 +10966,7 @@ insert:
           insert_lock_option
           opt_ignore insert2
           {
-            Select->set_lock_for_tables($3);
+            Select->set_lock_for_tables($3, true);
             Lex->current_select= &Lex->select_lex;
           }
           insert_field_spec opt_insert_update
@@ -10983,7 +10983,7 @@ replace:
           }
           replace_lock_option insert2
           {
-            Select->set_lock_for_tables($3);
+            Select->set_lock_for_tables($3, true);
             Lex->current_select= &Lex->select_lex;
           }
           insert_field_spec
@@ -11159,14 +11159,14 @@ update:
           opt_low_priority opt_ignore join_table_list
           SET update_list
           {
-            LEX *lex= Lex;
-            if (lex->select_lex.table_list.elements > 1)
-              lex->sql_command= SQLCOM_UPDATE_MULTI;
-            else if (lex->select_lex.get_table_list()->derived)
+            SELECT_LEX *slex= &Lex->select_lex;
+            if (slex->table_list.elements > 1)
+              Lex->sql_command= SQLCOM_UPDATE_MULTI;
+            else if (slex->get_table_list()->derived)
             {
               /* it is single table update and it is update of derived table */
               my_error(ER_NON_UPDATABLE_TABLE, MYF(0),
-                       lex->select_lex.get_table_list()->alias, "UPDATE");
+                       slex->get_table_list()->alias, "UPDATE");
               MYSQL_YYABORT;
             }
             /*
@@ -11174,7 +11174,7 @@ update:
               be too pessimistic. We will decrease lock level if possible in
               mysql_multi_update().
             */
-            Select->set_lock_for_tables($3);
+            slex->set_lock_for_tables($3, slex->table_list.elements == 1);
           }
           where_clause opt_order_clause delete_limit_clause {}
         ;
@@ -12073,6 +12073,7 @@ load:
             lex->field_list.empty();
             lex->update_list.empty();
             lex->value_list.empty();
+            lex->many_values.empty();
           }
           opt_load_data_charset
           { Lex->exchange->cs= $14; }
@@ -13833,13 +13834,16 @@ table_lock:
           table_ident opt_table_alias lock_option
           {
             thr_lock_type lock_type= (thr_lock_type) $3;
-            bool lock_for_write= (lock_type >= TL_WRITE_ALLOW_WRITE);
-            if (!Select->add_table_to_list(thd, $1, $2, 0, lock_type,
-                                           (lock_for_write ?
-                                            lock_type == TL_WRITE_CONCURRENT_INSERT ?
-                                            MDL_SHARED_WRITE :
-                                            MDL_SHARED_NO_READ_WRITE :
-                                            MDL_SHARED_READ)))
+            bool lock_for_write= lock_type >= TL_WRITE_ALLOW_WRITE;
+            ulong table_options= lock_for_write ? TL_OPTION_UPDATING : 0;
+            enum_mdl_type mdl_type= !lock_for_write
+                                    ? MDL_SHARED_READ
+                                    : lock_type == TL_WRITE_CONCURRENT_INSERT
+                                      ? MDL_SHARED_WRITE
+                                      : MDL_SHARED_NO_READ_WRITE;
+
+            if (!Select->add_table_to_list(thd, $1, $2, table_options,
+                                           lock_type, mdl_type))
               MYSQL_YYABORT;
           }
         ;
@@ -14626,19 +14630,21 @@ subselect_end:
             lex->current_select = lex->current_select->return_after_parsing();
             lex->nest_level--;
             lex->current_select->n_child_sum_items += child->n_sum_items;
-            /*
-              A subselect can add fields to an outer select. Reserve space for
-              them.
-            */
-            lex->current_select->select_n_where_fields+=
-            child->select_n_where_fields;
 
             /*
-              Aggregate functions in having clause may add fields to an outer
-              select. Count them also.
+              A subquery (and all the subsequent query blocks in a UNION) can
+              add columns to an outer query block. Reserve space for them.
+              Aggregate functions in having clause can also add fields to an
+              outer select.
             */
-            lex->current_select->select_n_having_items+=
-            child->select_n_having_items;
+            for (SELECT_LEX *temp= child->master_unit()->first_select();
+                 temp != NULL; temp= temp->next_select())
+            {
+              lex->current_select->select_n_where_fields+=
+                temp->select_n_where_fields;
+              lex->current_select->select_n_having_items+=
+                temp->select_n_having_items;
+            }
           }
         ;
 

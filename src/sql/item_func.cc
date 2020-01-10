@@ -222,6 +222,7 @@ Item_func::fix_fields(THD *thd, Item **ref)
 	maybe_null=1;
 
       with_sum_func= with_sum_func || item->with_sum_func;
+      with_param= with_param || item->with_param;
       with_field= with_field || item->with_field;
       used_tables_cache|=     item->used_tables();
       const_item_cache&=      item->const_item();
@@ -998,7 +999,10 @@ longlong Item_func_hybrid_result_type::val_int()
   case INT_RESULT:
     return int_op();
   case REAL_RESULT:
-    return (longlong) rint(real_op());
+  {
+    bool error;
+    return double_to_longlong(real_op(), unsigned_flag, &error);
+  }
   case STRING_RESULT:
   {
     if (is_temporal_type(field_type()))

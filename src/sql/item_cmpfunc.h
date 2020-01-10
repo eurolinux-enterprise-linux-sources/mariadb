@@ -694,6 +694,11 @@ public:
   bool eval_not_null_tables(uchar *opt_arg);
   void fix_after_pullout(st_select_lex *new_parent, Item **ref);
   bool count_sargable_conds(uchar *arg);
+
+  longlong val_int_cmp_string();
+  longlong val_int_cmp_int();
+  longlong val_int_cmp_real();
+  longlong val_int_cmp_decimal();
 };
 
 
@@ -1389,6 +1394,7 @@ public:
       const_item_cache= args[0]->const_item();
     }
   }
+  virtual void print(String *str, enum_query_type query_type);
   table_map not_null_tables() const { return 0; }
   optimize_type select_optimize() const { return OPTIMIZE_NULL; }
   Item *neg_transformer(THD *thd);

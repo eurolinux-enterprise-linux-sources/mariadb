@@ -1,5 +1,5 @@
 # Copyright (c) 2006, 2017, Oracle and/or its affiliates.
-# Copyright (c) 2008, 2017, MariaDB
+# Copyright (c) 2008, 2018, MariaDB Corporation
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -256,9 +256,15 @@ IF(HAVE_GGDB3)
   SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb3")
 ENDIF()
 
-OPTION(ENABLED_LOCAL_INFILE
- "If we should should enable LOAD DATA LOCAL by default" ${IF_WIN})
+SET(ENABLED_LOCAL_INFILE "AUTO" CACHE STRING "If we should should enable LOAD DATA LOCAL by default (OFF/ON/AUTO)")
 MARK_AS_ADVANCED(ENABLED_LOCAL_INFILE)
+IF (ENABLED_LOCAL_INFILE MATCHES "^(0|FALSE)$")
+  SET(ENABLED_LOCAL_INFILE OFF)
+ELSEIF(ENABLED_LOCAL_INFILE MATCHES "^(1|TRUE)$")
+  SET(ENABLED_LOCAL_INFILE ON)
+ELSEIF (NOT ENABLED_LOCAL_INFILE MATCHES "^(ON|OFF|AUTO)$")
+  MESSAGE(FATAL_ERROR "ENABLED_LOCAL_INFILE must be one of OFF, ON, AUTO")
+ENDIF()
 
 OPTION(WITH_FAST_MUTEXES "Compile with fast mutexes" OFF)
 MARK_AS_ADVANCED(WITH_FAST_MUTEXES)

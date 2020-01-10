@@ -589,7 +589,7 @@ public:
                                         enum_mdl_type mdl_type= MDL_SHARED_READ,
 					List<Index_hint> *hints= 0,
                                         LEX_STRING *option= 0);
-  virtual void set_lock_for_tables(thr_lock_type lock_type) {}
+  virtual void set_lock_for_tables(thr_lock_type lock_type, bool for_update) {}
 
   friend class st_select_lex_unit;
   friend bool mysql_new_select(LEX *lex, bool move_down);
@@ -728,6 +728,10 @@ public:
 };
 
 typedef class st_select_lex_unit SELECT_LEX_UNIT;
+
+
+#define TOUCHED_SEL_COND 1/* WHERE/HAVING/ON should be reinited before use */
+#define TOUCHED_SEL_DERIVED (1<<1)/* derived should be reinited before use */
 
 /*
   SELECT_LEX - store information of parsed SELECT statment
@@ -876,7 +880,8 @@ public:
     subquery. Prepared statements work OK in that regard, as in
     case of an error during prepare the PS is not created.
   */
-  bool first_execution;
+  uint8 changed_elements; // see TOUCHED_SEL_*
+  /* TODO: add foloowing first_* to bitmap above */
   bool first_natural_join_processing;
   bool first_cond_optimization;
   /* do not wrap view fields with Item_ref */
@@ -955,7 +960,7 @@ public:
   TABLE_LIST *convert_right_join();
   List<Item>* get_item_list();
   ulong get_table_join_options();
-  void set_lock_for_tables(thr_lock_type lock_type);
+  void set_lock_for_tables(thr_lock_type lock_type, bool for_update);
   inline void init_order()
   {
     order_list.elements= 0;
@@ -2785,6 +2790,31 @@ struct LEX: public Query_tables_list
   }
 
   bool save_prep_leaf_tables();
+
+  /*
+    Run specified phases for derived tables/views in the given list
+
+    @param table_list - list of derived tables/view to handle
+    @param phase      - phases to process tables/views through
+
+    @details
+    This method runs phases specified by the 'phases' on derived
+    tables/views found in the 'table_list' with help of the
+    TABLE_LIST::handle_derived function.
+    'this' is passed as an argument to the TABLE_LIST::handle_derived.
+
+    @return false -  ok
+    @return true  -  error
+  */
+  bool handle_list_of_derived(TABLE_LIST *table_list, uint phases)
+  {
+    for (TABLE_LIST *tl= table_list; tl; tl= tl->next_local)
+    {
+      if (tl->is_view_or_derived() && tl->handle_derived(this, phases))
+        return true;
+    }
+    return false;
+  }
 };
 
 

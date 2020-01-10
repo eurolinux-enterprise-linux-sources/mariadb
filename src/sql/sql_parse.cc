@@ -831,6 +831,7 @@ static bool deny_updates_if_read_only_option(THD *thd, TABLE_LIST *all_tables)
     DBUG_RETURN(FALSE);
 
   if (lex->sql_command == SQLCOM_CREATE_DB ||
+      lex->sql_command == SQLCOM_ALTER_DB ||
       lex->sql_command == SQLCOM_DROP_DB)
     DBUG_RETURN(TRUE);
 
@@ -2064,9 +2065,6 @@ mysql_execute_command(THD *thd)
           reset_one_shot_variables(thd);
         DBUG_RETURN(0);
       }
-      
-      for (table=all_tables; table; table=table->next_global)
-        table->updating= TRUE;
     }
     
     /*
@@ -4087,14 +4085,15 @@ create_sp_error:
 	    my_error(ER_SP_BADSELECT, MYF(0), sp->m_qname.str);
 	    goto error;
 	  }
-          /*
-            If SERVER_MORE_RESULTS_EXISTS is not set,
-            then remember that it should be cleared
-          */
-	  bits_to_be_cleared= (~thd->server_status &
-                               SERVER_MORE_RESULTS_EXISTS);
-	  thd->server_status|= SERVER_MORE_RESULTS_EXISTS;
 	}
+
+	/*
+	  If SERVER_MORE_RESULTS_EXISTS is not set,
+	  then remember that it should be cleared
+	*/
+	bits_to_be_cleared= (~thd->server_status &
+	                       SERVER_MORE_RESULTS_EXISTS);
+	thd->server_status|= SERVER_MORE_RESULTS_EXISTS;
 
 	if (check_routine_access(thd, EXECUTE_ACL,
 				 sp->m_db.str, sp->m_name.str, TRUE, FALSE))
@@ -6539,9 +6538,8 @@ TABLE_LIST *st_select_lex::convert_right_join()
     query
 */
 
-void st_select_lex::set_lock_for_tables(thr_lock_type lock_type)
+void st_select_lex::set_lock_for_tables(thr_lock_type lock_type, bool for_update)
 {
-  bool for_update= lock_type >= TL_READ_NO_INSERT;
   DBUG_ENTER("set_lock_for_tables");
   DBUG_PRINT("enter", ("lock_type: %d  for_update: %d", lock_type,
 		       for_update));

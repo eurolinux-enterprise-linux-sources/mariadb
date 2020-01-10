@@ -1,6 +1,11 @@
 # Tests and a bug where we track the failure in the following format:
 # suite.test : rhbz#1234567
+
+# Failing from 5.5.63 on all arches
+main.mysql                             :
+
+# i686, ppc64le
 main.mysql_client_test_nonblock        : rhbz#1544452 rhbz#1021450
-parts.partition_alter4_innodb          :
-parts.partition_alter2_2_2_innodb      :
+
+# ppc, ppc64le, aarch64
 innodb.innodb_simulate_comp_failures   :

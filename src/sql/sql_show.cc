@@ -2085,7 +2085,7 @@ view_store_create_info(THD *thd, TABLE_LIST *table, String *buff)
     We can't just use table->query, because our SQL_MODE may trigger
     a different syntax, like when ANSI_QUOTES is defined.
   */
-  table->view->unit.print(buff, QT_ORDINARY);
+  table->view->unit.print(buff, QT_VIEW_INTERNAL);
 
   if (table->with_check != VIEW_CHECK_NONE)
   {
@@ -7620,8 +7620,6 @@ int mysql_schema_table(THD *thd, LEX *lex, TABLE_LIST *table_list)
     table->alias_name_used= my_strcasecmp(table_alias_charset,
                                           table_list->schema_table_name,
                                           table_list->alias);
-  table_list->table_name= table->s->table_name.str;
-  table_list->table_name_length= table->s->table_name.length;
   table_list->table= table;
   table->next= thd->derived_tables;
   thd->derived_tables= table;

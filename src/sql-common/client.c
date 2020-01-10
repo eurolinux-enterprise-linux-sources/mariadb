@@ -115,6 +115,12 @@ my_bool	net_flush(NET *net);
 #include <my_context.h>
 #include <mysql_async.h>
 
+typedef enum {
+  ALWAYS_ACCEPT,       /* heuristics is disabled, use CLIENT_LOCAL_FILES */
+  WAIT_FOR_QUERY,      /* heuristics is enabled, not sending files */
+  ACCEPT_FILE_REQUEST  /* heuristics is enabled, ready to send a file */
+} auto_local_infile_state;
+
 #define native_password_plugin_name "mysql_native_password"
 #define old_password_plugin_name    "mysql_old_password"
 
@@ -1483,7 +1489,9 @@ unpack_fields(MYSQL *mysql, MYSQL_DATA *data,MEM_ROOT *alloc,uint fields,
     {
       uchar *pos;
       /* fields count may be wrong */
-      DBUG_ASSERT((uint) (field - result) < fields);
+      if (field - result >= fields)
+        goto err;
+
       cli_fetch_lengths(&lengths[0], row->data, default_value ? 8 : 7);
       field->catalog=   strmake_root(alloc,(char*) row->data[0], lengths[0]);
       field->db=        strmake_root(alloc,(char*) row->data[1], lengths[1]);
@@ -1501,12 +1509,7 @@ unpack_fields(MYSQL *mysql, MYSQL_DATA *data,MEM_ROOT *alloc,uint fields,
 
       /* Unpack fixed length parts */
       if (lengths[6] != 12)
-      {
-        /* malformed packet. signal an error. */
-        free_rows(data);			/* Free old data */
-        set_mysql_error(mysql, CR_MALFORMED_PACKET, unknown_sqlstate);
-        DBUG_RETURN(0);
-      }
+        goto err;
 
       pos= (uchar*) row->data[6];
       field->charsetnr= uint2korr(pos);
@@ -1533,6 +1536,8 @@ unpack_fields(MYSQL *mysql, MYSQL_DATA *data,MEM_ROOT *alloc,uint fields,
     /* old protocol, for backward compatibility */
     for (row=data->data; row ; row = row->next,field++)
     {
+      if (field - result >= fields)
+        goto err;
       cli_fetch_lengths(&lengths[0], row->data, default_value ? 6 : 5);
       field->org_table= field->table=  strdup_root(alloc,(char*) row->data[0]);
       field->name=   strdup_root(alloc,(char*) row->data[1]);
@@ -1569,8 +1574,17 @@ unpack_fields(MYSQL *mysql, MYSQL_DATA *data,MEM_ROOT *alloc,uint fields,
     }
   }
 #endif /* DELETE_SUPPORT_OF_4_0_PROTOCOL */
+  if (field - result < fields)
+    goto err;
   free_rows(data);				/* Free old data */
   DBUG_RETURN(result);
+
+err:
+  /* malformed packet. signal an error. */
+  free_rows(data);
+  free_root(alloc, MYF(0));
+  set_mysql_error(mysql, CR_MALFORMED_PACKET, unknown_sqlstate);
+  DBUG_RETURN(0);
 }
 
 /* Read all rows (fields or data) from server */
@@ -1590,6 +1604,7 @@ MYSQL_DATA *cli_read_rows(MYSQL *mysql,MYSQL_FIELD *mysql_fields,
 
   if ((pkt_len= cli_safe_read(mysql)) == packet_error)
     DBUG_RETURN(0);
+  if (pkt_len == 0) DBUG_RETURN(0);
   if (!(result=(MYSQL_DATA*) my_malloc(sizeof(MYSQL_DATA),
 				       MYF(MY_WME | MY_ZEROFILL))))
   {
@@ -1636,7 +1651,7 @@ MYSQL_DATA *cli_read_rows(MYSQL *mysql,MYSQL_FIELD *mysql_fields,
       else
       {
 	cur->data[field] = to;
-        if (len > (ulong) (end_to - to))
+        if (unlikely(len > (ulong)(end_to-to) || to > end_to))
         {
           free_rows(result);
           set_mysql_error(mysql, CR_MALFORMED_PACKET, unknown_sqlstate);
@@ -1708,7 +1723,7 @@ read_one_row(MYSQL *mysql,uint fields,MYSQL_ROW row, ulong *lengths)
     }
     else
     {
-      if (pos + len > end_pos)
+      if (unlikely(len > (ulong)(end_pos - pos) || pos > end_pos))
       {
         set_mysql_error(mysql, CR_UNKNOWN_ERROR, unknown_sqlstate);
         return -1;
@@ -1756,8 +1771,10 @@ mysql_init(MYSQL *mysql)
     --enable-local-infile
   */
 
-#if defined(ENABLED_LOCAL_INFILE) && !defined(MYSQL_SERVER)
+#if ENABLED_LOCAL_INFILE && !defined(MYSQL_SERVER)
   mysql->options.client_flag|= CLIENT_LOCAL_FILES;
+  mysql->auto_local_infile= ENABLED_LOCAL_INFILE == LOCAL_INFILE_MODE_AUTO
+                            ? WAIT_FOR_QUERY : ALWAYS_ACCEPT;
 #endif
 
 #ifdef HAVE_SMEM
@@ -2533,6 +2550,10 @@ static int send_client_reply_packet(MCPVIO_EXT *mpvio,
     mysql->client_flag|= CLIENT_MULTI_RESULTS;
 
 #ifdef HAVE_OPENSSL
+  if (mysql->options.ssl_key || mysql->options.ssl_cert ||
+      mysql->options.ssl_ca || mysql->options.ssl_capath ||
+      mysql->options.ssl_cipher)
+    mysql->options.use_ssl = 1;
   if (mysql->options.use_ssl)
     mysql->client_flag|= CLIENT_SSL;
 #endif /* HAVE_OPENSSL */
@@ -2590,6 +2611,9 @@ static int send_client_reply_packet(MCPVIO_EXT *mpvio,
     enum enum_ssl_init_error ssl_init_error;
     const char *cert_error;
     unsigned long ssl_error;
+#ifdef EMBEDDED_LIBRARY
+    DBUG_ASSERT(0); // embedded should not do SSL connect
+#endif
 
     /*
       Send mysql->client_flag, max_packet_size - unencrypted otherwise
@@ -2742,7 +2766,7 @@ static int client_mpvio_read_packet(struct st_plugin_vio *mpv, uchar **buf)
   *buf= mysql->net.read_pos;
 
   /* was it a request to change plugins ? */
-  if (**buf == 254)
+  if (pkt_len == packet_error || **buf == 254)
     return (int)packet_error; /* if yes, this plugin shan't continue */
 
   /*
@@ -2927,7 +2951,7 @@ int run_plugin_auth(MYSQL *mysql, char *data, uint data_len,
 
   compile_time_assert(CR_OK == -1);
   compile_time_assert(CR_ERROR == 0);
-  if (res > CR_OK && mysql->net.read_pos[0] != 254)
+  if (res > CR_OK && (mysql->net.last_errno || mysql->net.read_pos[0] != 254))
   {
     /*
       the plugin returned an error. write it down in mysql,
@@ -3935,7 +3959,13 @@ static my_bool cli_read_query_result(MYSQL *mysql)
   ulong field_count;
   MYSQL_DATA *fields;
   ulong length;
+#ifdef MYSQL_CLIENT
+  my_bool can_local_infile= mysql->auto_local_infile != WAIT_FOR_QUERY;
+#endif
   DBUG_ENTER("cli_read_query_result");
+
+  if (mysql->auto_local_infile == ACCEPT_FILE_REQUEST)
+    mysql->auto_local_infile= WAIT_FOR_QUERY;
 
   if ((length = cli_safe_read(mysql)) == packet_error)
     DBUG_RETURN(1);
@@ -3973,7 +4003,8 @@ get_info:
   {
     int error;
 
-    if (!(mysql->options.client_flag & CLIENT_LOCAL_FILES))
+    if (!(mysql->options.client_flag & CLIENT_LOCAL_FILES) ||
+        !can_local_infile)
     {
       set_mysql_error(mysql, CR_MALFORMED_PACKET, unknown_sqlstate);
       DBUG_RETURN(1);
@@ -4011,6 +4042,13 @@ int STDCALL
 mysql_send_query(MYSQL* mysql, const char* query, ulong length)
 {
   DBUG_ENTER("mysql_send_query");
+  if (mysql->options.client_flag & CLIENT_LOCAL_FILES &&
+      mysql->auto_local_infile == WAIT_FOR_QUERY &&
+      (*query == 'l' || *query == 'L'))
+  {
+    if (strncasecmp(query, STRING_WITH_LEN("load")) == 0)
+      mysql->auto_local_infile= ACCEPT_FILE_REQUEST;
+  }
   DBUG_RETURN(simple_command(mysql, COM_QUERY, (uchar*) query, length, 1));
 }
 
@@ -4225,10 +4263,12 @@ mysql_options(MYSQL *mysql,enum mysql_option option, const void *arg)
     mysql->options.protocol=MYSQL_PROTOCOL_PIPE; /* Force named pipe */
     break;
   case MYSQL_OPT_LOCAL_INFILE:			/* Allow LOAD DATA LOCAL ?*/
-    if (!arg || test(*(uint*) arg))
+    if (!arg || *(uint*) arg)
       mysql->options.client_flag|= CLIENT_LOCAL_FILES;
     else
       mysql->options.client_flag&= ~CLIENT_LOCAL_FILES;
+    mysql->auto_local_infile= arg && *(uint*)arg == LOCAL_INFILE_MODE_AUTO
+                              ? WAIT_FOR_QUERY : ALWAYS_ACCEPT;
     break;
   case MYSQL_INIT_COMMAND:
     add_init_command(&mysql->options,arg);

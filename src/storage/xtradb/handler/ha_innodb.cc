@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2000, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, 2009 Google Inc.
 Copyright (c) 2009, Percona Inc.
 
@@ -6369,6 +6369,8 @@ no_commit:
 	innodb_srv_conc_enter_innodb(prebuilt->trx);
 
 	error = row_insert_for_mysql((byte*) record, prebuilt);
+	DEBUG_SYNC(user_thd, "ib_after_row_insert");
+
 
 #ifdef EXTENDED_FOR_USERSTAT
 	if (UNIV_LIKELY(error == DB_SUCCESS && !trx->fake_changes)) {
@@ -7842,8 +7844,6 @@ create_table_def(
 			}
 		}
 
-		ut_a(field->type() < 256); /* we assume in dtype_form_prtype()
-					   that this fits in one byte */
 		col_len = field->pack_length();
 
 		/* The MySQL pack length contains 1 or 2 bytes length field
@@ -10689,8 +10689,10 @@ ha_innobase::start_stmt(
 		case SQLCOM_INSERT:
 		case SQLCOM_UPDATE:
 		case SQLCOM_DELETE:
+		case SQLCOM_REPLACE:
 			init_table_handle_for_HANDLER();
 			prebuilt->select_lock_type = LOCK_X;
+			prebuilt->stored_select_lock_type = LOCK_X;
 			error = row_lock_table_for_mysql(prebuilt, NULL, 1);
 
 			if (error != DB_SUCCESS) {

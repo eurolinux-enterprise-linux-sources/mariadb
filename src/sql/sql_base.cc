@@ -4468,6 +4468,45 @@ open_and_process_routine(THD *thd, Query_tables_list *prelocking_ctx,
   DBUG_RETURN(FALSE);
 }
 
+/*
+  If we are not already in prelocked mode and extended table list is not
+  yet built we might have to build the prelocking set for this statement.
+
+  Since currently no prelocking strategy prescribes doing anything for
+  tables which are only read, we do below checks only if table is going
+  to be changed.
+*/
+bool extend_table_list(THD *thd, TABLE_LIST *tables,
+                       Prelocking_strategy *prelocking_strategy,
+                       bool has_prelocking_list)
+{
+  bool error= false;
+  LEX *lex= thd->lex;
+
+  if (thd->locked_tables_mode <= LTM_LOCK_TABLES &&
+      ! has_prelocking_list && tables->updating &&
+      tables->lock_type >= TL_WRITE_ALLOW_WRITE)
+  {
+    bool need_prelocking= FALSE;
+    TABLE_LIST **save_query_tables_last= lex->query_tables_last;
+    /*
+      Extend statement's table list and the prelocking set with
+      tables and routines according to the current prelocking
+      strategy.
+
+      For example, for DML statements we need to add tables and routines
+      used by triggers which are going to be invoked for this element of
+      table list and also add tables required for handling of foreign keys.
+    */
+    error= prelocking_strategy->handle_table(thd, lex, tables,
+                                             &need_prelocking);
+
+    if (need_prelocking && ! lex->requires_prelocking())
+      lex->mark_as_requiring_prelocking(save_query_tables_last);
+  }
+  return error;
+}
+
 
 /**
   Handle table list element by obtaining metadata lock, opening table or view
@@ -4496,15 +4535,14 @@ open_and_process_routine(THD *thd, Query_tables_list *prelocking_ctx,
 */
 
 static bool
-open_and_process_table(THD *thd, LEX *lex, TABLE_LIST *tables,
-                       uint *counter, uint flags,
+open_and_process_table(THD *thd, TABLE_LIST *tables, uint *counter, uint flags,
                        Prelocking_strategy *prelocking_strategy,
-                       bool has_prelocking_list,
-                       Open_table_context *ot_ctx,
+                       bool has_prelocking_list, Open_table_context *ot_ctx,
                        MEM_ROOT *new_frm_mem)
 {
   bool error= FALSE;
   bool safe_to_ignore_table= FALSE;
+  LEX *lex= thd->lex;
   DBUG_ENTER("open_and_process_table");
   DEBUG_SYNC(thd, "open_and_process_table");
 
@@ -4654,38 +4692,9 @@ open_and_process_table(THD *thd, LEX *lex, TABLE_LIST *tables,
   if (tables->open_strategy && !tables->table)
     goto end;
 
-  /*
-    If we are not already in prelocked mode and extended table list is not
-    yet built we might have to build the prelocking set for this statement.
-
-    Since currently no prelocking strategy prescribes doing anything for
-    tables which are only read, we do below checks only if table is going
-    to be changed.
-  */
-  if (thd->locked_tables_mode <= LTM_LOCK_TABLES &&
-      ! has_prelocking_list &&
-      tables->lock_type >= TL_WRITE_ALLOW_WRITE)
-  {
-    bool need_prelocking= FALSE;
-    TABLE_LIST **save_query_tables_last= lex->query_tables_last;
-    /*
-      Extend statement's table list and the prelocking set with
-      tables and routines according to the current prelocking
-      strategy.
-
-      For example, for DML statements we need to add tables and routines
-      used by triggers which are going to be invoked for this element of
-      table list and also add tables required for handling of foreign keys.
-    */
-    error= prelocking_strategy->handle_table(thd, lex, tables,
-                                             &need_prelocking);
-
-    if (need_prelocking && ! lex->requires_prelocking())
-      lex->mark_as_requiring_prelocking(save_query_tables_last);
-
-    if (error)
-      goto end;
-  }
+  error= extend_table_list(thd, tables, prelocking_strategy, has_prelocking_list);
+  if (error)
+    goto end;
 
   if (tables->lock_type != TL_UNLOCK && ! thd->locked_tables_mode)
   {
@@ -4994,8 +5003,9 @@ open_tables_check_upgradable_mdl(THD *thd, TABLE_LIST *tables_start,
   @retval  TRUE   Error, reported.
 */
 
-bool open_tables(THD *thd, TABLE_LIST **start, uint *counter, uint flags,
-                Prelocking_strategy *prelocking_strategy)
+bool open_tables(THD *thd, TABLE_LIST **start, uint *counter,
+                 Sroutine_hash_entry **sroutine_to_open_list, uint flags,
+                 Prelocking_strategy *prelocking_strategy)
 {
   /*
     We use pointers to "next_global" member in the last processed TABLE_LIST
@@ -5043,7 +5053,7 @@ restart:
 
   has_prelocking_list= thd->lex->requires_prelocking();
   table_to_open= start;
-  sroutine_to_open= (Sroutine_hash_entry**) &thd->lex->sroutines_list.first;
+  sroutine_to_open= sroutine_to_open_list;
   *counter= 0;
   thd_proc_info(thd, "Opening tables");
 
@@ -5112,10 +5122,9 @@ restart:
     for (tables= *table_to_open; tables;
          table_to_open= &tables->next_global, tables= tables->next_global)
     {
-      error= open_and_process_table(thd, thd->lex, tables, counter,
-                                    flags, prelocking_strategy,
-                                    has_prelocking_list, &ot_ctx,
-                                    &new_frm_mem);
+      error= open_and_process_table(thd, tables, counter, flags,
+                                    prelocking_strategy, has_prelocking_list,
+                                    &ot_ctx, &new_frm_mem);
 
       if (error)
       {
@@ -6426,6 +6435,9 @@ find_field_in_natural_join(THD *thd, TABLE_LIST *table_ref, const char *name,
       column reference. See create_view_field() for details.
     */
     item= nj_col->create_item(thd);
+    if (!item)
+      DBUG_RETURN(NULL);
+
     /*
      *ref != NULL means that *ref contains the item that we need to
      replace. If the item was aliased by the user, set the alias to
@@ -7684,6 +7696,7 @@ store_natural_using_join_columns(THD *thd, TABLE_LIST *natural_using_join,
   Query_arena *arena, backup;
   bool result= TRUE;
   List<Natural_join_column> *non_join_columns;
+  List<Natural_join_column> *join_columns;
   DBUG_ENTER("store_natural_using_join_columns");
 
   DBUG_ASSERT(!natural_using_join->join_columns);
@@ -7691,7 +7704,7 @@ store_natural_using_join_columns(THD *thd, TABLE_LIST *natural_using_join,
   arena= thd->activate_stmt_arena_if_needed(&backup);
 
   if (!(non_join_columns= new List<Natural_join_column>) ||
-      !(natural_using_join->join_columns= new List<Natural_join_column>))
+      !(join_columns= new List<Natural_join_column>))
     goto err;
 
   /* Append the columns of the first join operand. */
@@ -7700,7 +7713,7 @@ store_natural_using_join_columns(THD *thd, TABLE_LIST *natural_using_join,
     nj_col_1= it_1.get_natural_column_ref();
     if (nj_col_1->is_common)
     {
-      natural_using_join->join_columns->push_back(nj_col_1);
+      join_columns->push_back(nj_col_1);
       /* Reset the common columns for the next call to mark_common_columns. */
       nj_col_1->is_common= FALSE;
     }
@@ -7721,7 +7734,7 @@ store_natural_using_join_columns(THD *thd, TABLE_LIST *natural_using_join,
     {
       const char *using_field_name_ptr= using_field_name->c_ptr();
       List_iterator_fast<Natural_join_column>
-        it(*(natural_using_join->join_columns));
+        it(*join_columns);
       Natural_join_column *common_field;
 
       for (;;)
@@ -7754,15 +7767,28 @@ store_natural_using_join_columns(THD *thd, TABLE_LIST *natural_using_join,
   }
 
   if (non_join_columns->elements > 0)
-    natural_using_join->join_columns->concat(non_join_columns);
+    join_columns->concat(non_join_columns);
+  natural_using_join->join_columns= join_columns;
   natural_using_join->is_join_columns_complete= TRUE;
 
   result= FALSE;
 
-err:
   if (arena)
     thd->restore_active_arena(arena, &backup);
   DBUG_RETURN(result);
+
+err:
+  /*
+     Actually we failed to build join columns list, so we have to
+     clear it to avoid problems with half-build join on next run.
+     The list was created in mark_common_columns().
+   */
+  table_ref_1->remove_join_columns();
+  table_ref_2->remove_join_columns();
+
+  if (arena)
+    thd->restore_active_arena(arena, &backup);
+  DBUG_RETURN(TRUE);
 }
 
 
@@ -7986,7 +8012,6 @@ static bool setup_natural_join_row_types(THD *thd,
     DBUG_PRINT("info", ("using cached setup_natural_join_row_types"));
     DBUG_RETURN(false);
   }
-  context->select_lex->first_natural_join_processing= false;
 
   List_iterator_fast<TABLE_LIST> table_ref_it(*from_clause);
   TABLE_LIST *table_ref; /* Current table reference. */
@@ -8031,6 +8056,7 @@ static bool setup_natural_join_row_types(THD *thd,
     change on re-execution
   */
   context->natural_join_first_table= context->first_name_resolution_table;
+  context->select_lex->first_natural_join_processing= false;
   DBUG_RETURN (false);
 }
 

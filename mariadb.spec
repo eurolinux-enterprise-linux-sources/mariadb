@@ -3,7 +3,7 @@
 %bcond_with tokudb
 
 Name: mariadb
-Version: 5.5.60
+Version: 5.5.64
 Release: 1%{?dist}
 Epoch: 1
 
@@ -727,6 +727,16 @@ fi
 %{_mandir}/man1/mysql_client_test.1*
 
 %changelog
+* Thu May 02 2019 Michal Schorm <mschorm@redhat.com> - 1:5.5.64-1
+- Rebase to 5.5.64
+- Resolves: #1490398
+- CVE's fixed: #1610986
+  CVE-2018-3058 CVE-2018-3063 CVE-2018-3066 CVE-2018-3081
+- CVE's fixed: #1664043
+  CVE-2018-3282 CVE-2019-2503
+- CVE's fixed: #1701686
+  CVE-2019-2529
+
 * Thu May 10 2018 Michal Schorm <mschorm@redhat.com> - 1:5.5.60-1
 - Rebase to 5.5.60
 - CVE's fixed: #1558256, #1558260, #1559060

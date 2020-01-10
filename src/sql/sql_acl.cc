@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates.
    Copyright (c) 2009, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
@@ -825,6 +825,14 @@ static my_bool acl_load(THD *thd, TABLE_LIST *tables)
     goto end;
 
   table->use_all_columns();
+
+  if (table->s->fields < 13) // number of columns in 3.21
+  {
+    sql_print_error("Fatal error: mysql.user table is damaged or in "
+                    "unsupported 3.20 format.");
+    goto end;
+  }
+
   username_char_length= min(table->field[1]->char_length(), USERNAME_CHAR_LENGTH);
   password_length= table->field[2]->field_length /
     table->field[2]->charset()->mbmaxlen;
@@ -1150,6 +1158,20 @@ void acl_free(bool end)
 }
 
 
+static void fix_table_list(TABLE_LIST *tl, uint n)
+{
+  TABLE_LIST *end;
+  for (end= tl + n - 1; tl < end; tl++)
+  {
+    tl->i_s_requested_object= OPEN_TABLE_ONLY;
+    tl->open_type= OT_BASE_ONLY;
+    tl->next_local= tl->next_global= tl + 1;
+  }
+  tl->i_s_requested_object= OPEN_TABLE_ONLY;
+  tl->open_type= OT_BASE_ONLY;
+}
+
+
 /*
   Forget current user/db-level privileges and read new privileges
   from the privilege tables.
@@ -1191,11 +1213,7 @@ my_bool acl_reload(THD *thd)
   tables[3].init_one_table(C_STRING_WITH_LEN("mysql"),
                            C_STRING_WITH_LEN("proxies_priv"), 
                            "proxies_priv", TL_READ);
-  tables[0].next_local= tables[0].next_global= tables + 1;
-  tables[1].next_local= tables[1].next_global= tables + 2;
-  tables[2].next_local= tables[2].next_global= tables + 3;
-  tables[0].open_type= tables[1].open_type= tables[2].open_type= 
-  tables[3].open_type= OT_BASE_ONLY;
+  fix_table_list(tables, 4);
   tables[3].open_strategy= TABLE_LIST::OPEN_IF_EXISTS;
 
   if (open_and_lock_tables(thd, tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
@@ -1921,6 +1939,7 @@ bool change_password(THD *thd, const char *host, const char *user,
     DBUG_RETURN(1);
 
   tables.init_one_table("mysql", 5, "user", 4, "user", TL_WRITE);
+  fix_table_list(&tables, 1);
 
 #ifdef HAVE_REPLICATION
   /*
@@ -2282,6 +2301,7 @@ static bool test_if_create_new_users(THD *thd)
     ulong db_access;
     tl.init_one_table(C_STRING_WITH_LEN("mysql"),
                       C_STRING_WITH_LEN("user"), "user", TL_WRITE);
+    fix_table_list(&tl, 1);
     create_new_users= 1;
 
     db_access=acl_get(sctx->host, sctx->ip,
@@ -3689,10 +3709,11 @@ int mysql_table_grant(THD *thd, TABLE_LIST *table_list,
   tables[2].init_one_table(C_STRING_WITH_LEN("mysql"),
                            C_STRING_WITH_LEN("columns_priv"),
                            "columns_priv", TL_WRITE);
-  tables[0].next_local= tables[0].next_global= tables+1;
   /* Don't open column table if we don't need it ! */
   if (column_priv || (revoke_grant && ((rights & COL_ACLS) || columns.elements)))
-    tables[1].next_local= tables[1].next_global= tables+2;
+    fix_table_list(tables, 3);
+  else
+    fix_table_list(tables, 2);
 
   /*
     This statement will be replicated as a statement, even when using
@@ -3930,7 +3951,7 @@ bool mysql_routine_grant(THD *thd, TABLE_LIST *table_list, bool is_proc,
                            C_STRING_WITH_LEN("user"), "user", TL_WRITE);
   tables[1].init_one_table(C_STRING_WITH_LEN("mysql"),
                            C_STRING_WITH_LEN("procs_priv"), "procs_priv", TL_WRITE);
-  tables[0].next_local= tables[0].next_global= tables+1;
+  fix_table_list(tables, 2);
 
   /*
     This statement will be replicated as a statement, even when using
@@ -4104,7 +4125,7 @@ bool mysql_grant(THD *thd, const char *db, List <LEX_USER> &list,
                              C_STRING_WITH_LEN("db"), 
                              "db", 
                              TL_WRITE);
-  tables[0].next_local= tables[0].next_global= tables+1;
+  fix_table_list(tables, 2);
 
   /*
     This statement will be replicated as a statement, even when using
@@ -4451,6 +4472,7 @@ end_index_init:
     exists.
 
   @param thd A pointer to the thread handler object.
+  @param table A pointer to the table list.
 
   @see grant_reload
 
@@ -4459,31 +4481,22 @@ end_index_init:
     @retval TRUE An error has occurred.
 */
 
-static my_bool grant_reload_procs_priv(THD *thd)
+static my_bool grant_reload_procs_priv(THD *thd, TABLE_LIST *table)
 {
   HASH old_proc_priv_hash, old_func_priv_hash;
-  TABLE_LIST table;
   my_bool return_val= FALSE;
   DBUG_ENTER("grant_reload_procs_priv");
 
-  table.init_one_table("mysql", 5, "procs_priv",
-                       strlen("procs_priv"), "procs_priv",
-                       TL_READ);
-  table.open_type= OT_BASE_ONLY;
-
-  if (open_and_lock_tables(thd, &table, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
-    DBUG_RETURN(TRUE);
-
-  mysql_rwlock_wrlock(&LOCK_grant);
   /* Save a copy of the current hash if we need to undo the grant load */
   old_proc_priv_hash= proc_priv_hash;
   old_func_priv_hash= func_priv_hash;
 
-  if ((return_val= grant_load_procs_priv(table.table)))
+  if ((return_val= grant_load_procs_priv(table->table)))
   {
     /* Error; Reverting to old hash */
     DBUG_PRINT("error",("Reverting to old privileges"));
-    grant_free();
+    my_hash_free(&proc_priv_hash);
+    my_hash_free(&func_priv_hash);
     proc_priv_hash= old_proc_priv_hash;
     func_priv_hash= old_func_priv_hash;
   }
@@ -4492,9 +4505,7 @@ static my_bool grant_reload_procs_priv(THD *thd)
     my_hash_free(&old_proc_priv_hash);
     my_hash_free(&old_func_priv_hash);
   }
-  mysql_rwlock_unlock(&LOCK_grant);
 
-  close_mysql_tables(thd);
   DBUG_RETURN(return_val);
 }
 
@@ -4516,7 +4527,7 @@ static my_bool grant_reload_procs_priv(THD *thd)
 
 my_bool grant_reload(THD *thd)
 {
-  TABLE_LIST tables[2];
+  TABLE_LIST tables[3];
   HASH old_column_priv_hash;
   MEM_ROOT old_mem;
   my_bool return_val= 1;
@@ -4532,15 +4543,54 @@ my_bool grant_reload(THD *thd)
   tables[1].init_one_table(C_STRING_WITH_LEN("mysql"),
                            C_STRING_WITH_LEN("columns_priv"),
                            "columns_priv", TL_READ);
-  tables[0].next_local= tables[0].next_global= tables+1;
-  tables[0].open_type= tables[1].open_type= OT_BASE_ONLY;
+  tables[2].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("procs_priv"),
+                           "procs_priv", TL_READ);
+  fix_table_list(tables, 3);
+
+  /*
+    Reload will work in the following manner:-
+
+                             proc_priv_hash structure
+                              /                     \
+                    not initialized                 initialized
+                   /               \                     |
+    mysql.procs_priv table        Server Startup         |
+        is missing                      \                |
+             |                         open_and_lock_tables()
+    Assume we are working on           /success             \failure
+    pre 4.1 system tables.        Normal Scenario.          An error is thrown.
+    A warning is printed          Reload column privilege.  Retain the old hash.
+    and continue with             Reload function and
+    reloading the column          procedure privileges,
+    privileges.                   if available.
+  */
+
+  if (!(my_hash_inited(&proc_priv_hash)))
+    tables[2].open_strategy= TABLE_LIST::OPEN_IF_EXISTS;
 
   /*
     To avoid deadlocks we should obtain table locks before
     obtaining LOCK_grant rwlock.
   */
   if (open_and_lock_tables(thd, tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  {
+    if (thd->stmt_da->is_error())
+    {
+      sql_print_error("Fatal error: Can't open and lock privilege tables: %s",
+                      thd->stmt_da->message());
+    }
     goto end;
+  }
+
+  if (tables[2].table == NULL)
+  {
+    sql_print_warning("Table 'mysql.procs_priv' does not exist. "
+                      "Please run mysql_upgrade.");
+    push_warning_printf(thd, MYSQL_ERROR::WARN_LEVEL_WARN, ER_NO_SUCH_TABLE,
+                        ER(ER_NO_SUCH_TABLE), tables[2].db,
+                        tables[2].table_name);
+  }
 
   mysql_rwlock_wrlock(&LOCK_grant);
   old_column_priv_hash= column_priv_hash;
@@ -4552,10 +4602,18 @@ my_bool grant_reload(THD *thd)
   old_mem= memex;
   init_sql_alloc(&memex, ACL_ALLOC_BLOCK_SIZE, 0);
 
-  if ((return_val= grant_load(thd, tables)))
+  /*
+    tables[2].table i.e. procs_priv can be null if we are working with
+    pre 4.1 privilage tables
+  */
+  if ((return_val= (grant_load(thd, tables) ||
+                    (tables[2].table != NULL &&
+                     grant_reload_procs_priv(thd, &tables[2])))
+     ))
   {						// Error. Revert to old hash
     DBUG_PRINT("error",("Reverting to old privileges"));
-    grant_free();				/* purecov: deadcode */
+    my_hash_free(&column_priv_hash);
+    free_root(&memex,MYF(0));
     column_priv_hash= old_column_priv_hash;	/* purecov: deadcode */
     memex= old_mem;				/* purecov: deadcode */
   }
@@ -4563,22 +4621,12 @@ my_bool grant_reload(THD *thd)
   {
     my_hash_free(&old_column_priv_hash);
     free_root(&old_mem,MYF(0));
+    grant_version++;
   }
-  mysql_rwlock_unlock(&LOCK_grant);
-  close_mysql_tables(thd);
-
-  /*
-    It is OK failing to load procs_priv table because we may be
-    working with 4.1 privilege tables.
-  */
-  if (grant_reload_procs_priv(thd))
-    return_val= 1;
-
-  mysql_rwlock_wrlock(&LOCK_grant);
-  grant_version++;
   mysql_rwlock_unlock(&LOCK_grant);
 
 end:
+  close_mysql_tables(thd);
   DBUG_RETURN(return_val);
 }
 
@@ -5834,29 +5882,24 @@ int open_grant_tables(THD *thd, TABLE_LIST *tables)
     DBUG_RETURN(-1);
   }
 
-  tables->init_one_table(C_STRING_WITH_LEN("mysql"),
-                         C_STRING_WITH_LEN("user"), "user", TL_WRITE);
-  (tables+1)->init_one_table(C_STRING_WITH_LEN("mysql"),
-                             C_STRING_WITH_LEN("db"), "db", TL_WRITE);
-  (tables+2)->init_one_table(C_STRING_WITH_LEN("mysql"),
-                             C_STRING_WITH_LEN("tables_priv"),
-                             "tables_priv", TL_WRITE);
-  (tables+3)->init_one_table(C_STRING_WITH_LEN("mysql"),
-                             C_STRING_WITH_LEN("columns_priv"),
-                             "columns_priv", TL_WRITE);
-  (tables+4)->init_one_table(C_STRING_WITH_LEN("mysql"),
-                             C_STRING_WITH_LEN("procs_priv"),
-                             "procs_priv", TL_WRITE);
-  (tables+5)->init_one_table(C_STRING_WITH_LEN("mysql"),
-                             C_STRING_WITH_LEN("proxies_priv"),
-                             "proxies_priv", TL_WRITE);
+  tables[0].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("user"), "user", TL_WRITE);
+  tables[1].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("db"), "db", TL_WRITE);
+  tables[2].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("tables_priv"),
+                           "tables_priv", TL_WRITE);
+  tables[3].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("columns_priv"),
+                           "columns_priv", TL_WRITE);
+  tables[4].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("procs_priv"),
+                           "procs_priv", TL_WRITE);
+  tables[5].init_one_table(C_STRING_WITH_LEN("mysql"),
+                           C_STRING_WITH_LEN("proxies_priv"),
+                           "proxies_priv", TL_WRITE);
   tables[5].open_strategy= TABLE_LIST::OPEN_IF_EXISTS;
-
-  tables->next_local= tables->next_global= tables + 1;
-  (tables+1)->next_local= (tables+1)->next_global= tables + 2;
-  (tables+2)->next_local= (tables+2)->next_global= tables + 3;
-  (tables+3)->next_local= (tables+3)->next_global= tables + 4;
-  (tables+4)->next_local= (tables+4)->next_global= tables + 5;
+  fix_table_list(tables, 6);
 
 #ifdef HAVE_REPLICATION
   /*
@@ -7155,17 +7198,12 @@ bool sp_grant_privileges(THD *thd, const char *sp_db, const char *sp_name,
   if (!(combo=(LEX_USER*) thd->alloc(sizeof(st_lex_user))))
     DBUG_RETURN(TRUE);
 
-  combo->user.str= sctx->user;
+  combo->user.str= (char *) sctx->priv_user;
 
   mysql_mutex_lock(&acl_cache->lock);
 
-  if ((au= find_acl_user(combo->host.str=(char*)sctx->host_or_ip,combo->user.str,FALSE)))
-    goto found_acl;
-  if ((au= find_acl_user(combo->host.str=(char*)sctx->host, combo->user.str,FALSE)))
-    goto found_acl;
-  if ((au= find_acl_user(combo->host.str=(char*)sctx->ip, combo->user.str,FALSE)))
-    goto found_acl;
-  if((au= find_acl_user(combo->host.str=(char*)"%", combo->user.str, FALSE)))
+ if ((au= find_acl_user(combo->host.str= (char *) sctx->priv_host,
+                        combo->user.str, TRUE)))
     goto found_acl;
 
   mysql_mutex_unlock(&acl_cache->lock);
@@ -8217,6 +8255,7 @@ static bool send_plugin_request_packet(MPVIO_EXT *mpvio,
   const char *client_auth_plugin=
     ((st_mysql_auth *) (plugin_decl(mpvio->plugin)->info))->client_auth_plugin;
 
+  DBUG_EXECUTE_IF("auth_disconnect", { vio_close(net->vio); DBUG_RETURN(1); });
   DBUG_ASSERT(client_auth_plugin);
 
   /*
